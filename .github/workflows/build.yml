@@ -1,0 +1,60 @@
+name: Build Crossword App
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: Crossword-Windows.exe
+            build_cmd: pyinstaller --onefile --windowed --add-data "demo_questions.json;." --name "Crossword" main.py
+          - os: macos-latest
+            artifact: Crossword-Mac
+            build_cmd: pyinstaller --onefile --windowed --add-data "demo_questions.json:." --name "Crossword" main.py
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build executable
+        run: ${{ matrix.build_cmd }}
+
+      - name: Upload Windows artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Crossword-Windows
+          path: dist/Crossword.exe
+
+      - name: Upload Mac artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Crossword-Mac
+          path: dist/Crossword.app
+          if-no-files-found: warn
+
+      - name: Upload Mac binary (fallback)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Crossword-Mac-Binary
+          path: dist/Crossword
+          if-no-files-found: warn
