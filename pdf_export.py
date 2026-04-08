@@ -69,14 +69,18 @@ def _register_font() -> None:
     )
 
 
-def export_pdf(crossword: Crossword, filepath: str, show_answers: bool = False) -> None:
+def export_pdf(crossword: Crossword, filepath: str, show_answers: bool = False,
+               cell_size: int = None) -> None:
     """Экспортирует кроссворд в PDF-файл."""
     _register_font()
+
+    # Конвертируем px в мм для PDF (примерно 1px ≈ 0.26mm)
+    pdf_cell_size = (cell_size * 0.26 * mm) if cell_size else CELL_SIZE
 
     c = canvas.Canvas(filepath, pagesize=A4)
     c.setTitle(crossword.title)
 
-    _draw_crossword_page(c, crossword, show_answers)
+    _draw_crossword_page(c, crossword, show_answers, pdf_cell_size)
     c.showPage()
     _draw_clues_page(c, crossword)
     c.showPage()
@@ -84,7 +88,8 @@ def export_pdf(crossword: Crossword, filepath: str, show_answers: bool = False) 
     c.save()
 
 
-def _draw_crossword_page(c: canvas.Canvas, cw: Crossword, show_answers: bool) -> None:
+def _draw_crossword_page(c: canvas.Canvas, cw: Crossword, show_answers: bool,
+                         cell_size_mm=None) -> None:
     """Рисует страницу с сеткой кроссворда."""
     # Заголовок
     c.setFont(FONT_NAME, 18)
@@ -107,10 +112,11 @@ def _draw_crossword_page(c: canvas.Canvas, cw: Crossword, show_answers: bool) ->
     elif ptype == "japanese":
         _draw_japanese_page(c, cw, show_answers)
     else:
-        _draw_grid_page(c, cw, show_answers)
+        _draw_grid_page(c, cw, show_answers, cell_size_mm)
 
 
-def _draw_grid_page(c: canvas.Canvas, cw: Crossword, show_answers: bool) -> None:
+def _draw_grid_page(c: canvas.Canvas, cw: Crossword, show_answers: bool,
+                    cell_size_mm=None) -> None:
     """Рисует сеточные типы: classic, filword, crisscross, codeword, scanword."""
     ptype = cw.puzzle_type
 
@@ -118,7 +124,8 @@ def _draw_grid_page(c: canvas.Canvas, cw: Crossword, show_answers: bool) -> None
     available_w = PAGE_W - 2 * MARGIN
     available_h = PAGE_H - MARGIN - 30 * mm - MARGIN
 
-    cell = min(CELL_SIZE, available_w / cw.cols, available_h / cw.rows)
+    max_cell = cell_size_mm if cell_size_mm else CELL_SIZE
+    cell = min(max_cell, available_w / cw.cols, available_h / cw.rows)
     cell = min(cell, 10 * mm)
 
     grid_w = cw.cols * cell
@@ -129,12 +136,25 @@ def _draw_grid_page(c: canvas.Canvas, cw: Crossword, show_answers: bool) -> None
 
     # Данные для специальных типов
     clue_cells = {}
+    clue_skip = set()
     if ptype == "scanword":
-        for cr, cc, hint, arrow in cw.extra_data.get("clue_cells", []):
-            clue_cells[(cr, cc)] = (hint, arrow)
+        for item in cw.extra_data.get("clue_cells", []):
+            cr, cc, hint, arrow = item[0], item[1], item[2], item[3]
+            sr = item[4] if len(item) > 4 else 1
+            sc = item[5] if len(item) > 5 else 1
+            t_r = item[6] if len(item) > 6 else None
+            t_c = item[7] if len(item) > 7 else None
+            clue_cells[(cr, cc)] = (hint, arrow, sr, sc, t_r, t_c)
+            for dr in range(sr):
+                for dc in range(sc):
+                    if dr != 0 or dc != 0:
+                        clue_skip.add((cr + dr, cc + dc))
 
     letter_map = cw.extra_data.get("letter_map", {})
     hint_letters = cw.extra_data.get("hint_letters", [])
+
+    # Отложенные стрелки сканворда (рисуем поверх всех ячеек)
+    deferred_arrows = []
 
     # Рисуем клетки
     for row in range(cw.rows):
@@ -144,27 +164,60 @@ def _draw_grid_page(c: canvas.Canvas, cw: Crossword, show_answers: bool) -> None
 
             ch = cw.grid[row][col]
 
-            # Сканворд: ячейка-подсказка
-            if ptype == "scanword" and (row, col) in clue_cells:
-                hint, arrow = clue_cells[(row, col)]
-                c.setFillColor(HexColor("#3d5a80"))
-                c.rect(x, y, cell, cell, fill=1, stroke=1)
-                c.setFillColor(white)
-                fs = max(3, min(5, cell / mm * 0.18))
-                c.setFont(FONT_NAME, fs)
-                c.drawCentredString(x + cell / 2, y + cell * 0.35, hint[:12])
-                # Стрелка
-                c.setFillColor(HexColor("#f2cc8f"))
-                c.setFont(FONT_NAME, fs + 1)
-                if arrow == 'right':
-                    c.drawString(x + cell - fs * 1.2, y + cell * 0.5, "→")
-                else:
-                    c.drawCentredString(x + cell / 2, y + 2, "↓")
+            # Сканворд: пропускаем ячейки из продолжения span
+            if ptype == "scanword" and (row, col) in clue_skip:
                 continue
 
-            if not ch:
-                # Филворд: все клетки заполнены, рисуем пустые лёгким фоном
-                if ptype == "filword":
+            # Сканворд: ячейка-подсказка (с span)
+            if ptype == "scanword" and (row, col) in clue_cells:
+                hint, arrow, sr, sc, t_r, t_c = clue_cells[(row, col)]
+                bw = sc * cell
+                bh = sr * cell
+                by = start_y - (row + sr) * cell
+
+                c.setFillColor(HexColor("#3d5a80"))
+                c.rect(x, by, bw, bh, fill=1, stroke=1)
+
+                # Мелкий шрифт
+                area_factor = max(1, sr * sc)
+                fs = max(2.5, min(5, cell / mm * 0.18 * (area_factor ** 0.3)))
+                c.setFillColor(white)
+                c.setFont(FONT_NAME, fs)
+
+                # Перенос текста по строкам
+                max_chars_per_line = max(5, int(bw / (fs * 0.6 * mm)))
+                words = hint.split()
+                lines = []
+                current = ""
+                for word in words:
+                    test = (current + " " + word).strip()
+                    if len(test) <= max_chars_per_line:
+                        current = test
+                    else:
+                        if current:
+                            lines.append(current)
+                        current = word
+                if current:
+                    lines.append(current)
+
+                total_text_h = len(lines) * (fs + 1)
+                text_start_y = by + bh / 2 + total_text_h / 2 - fs + 1
+                for i, line in enumerate(lines):
+                    c.drawCentredString(x + bw / 2, text_start_y - i * (fs + 1), line)
+
+                # Запоминаем стрелку для отрисовки поверх всех ячеек
+                if t_r is not None and t_c is not None:
+                    deferred_arrows.append((x, by, bw, bh, arrow, t_r, t_c))
+                continue
+
+            # Тёмные блоки (сканворд) и пустые ячейки
+            if ch == '#BLOCK#':
+                if ptype == "scanword":
+                    c.setFillColor(HexColor("#3d5a80"))
+                    c.rect(x, y, cell, cell, fill=1, stroke=1)
+                continue
+            if not ch or ch == '#CLUE#':
+                if ptype == "filword" and not ch:
                     c.setFillColor(HexColor("#f0ede8"))
                     c.rect(x, y, cell, cell, fill=1, stroke=1)
                 continue
@@ -202,8 +255,8 @@ def _draw_grid_page(c: canvas.Canvas, cw: Crossword, show_answers: bool) -> None
                 c.setFont(FONT_NAME, font_size)
                 c.drawCentredString(x + cell / 2, y + cell * 0.25, ch)
 
-    # Номера (не для крисс-кросса и кейворда)
-    if ptype not in ("crisscross", "codeword", "filword"):
+    # Номера (не для крисс-кросса, кейворда, сканворда)
+    if ptype not in ("crisscross", "codeword", "filword", "scanword"):
         c.setFillColor(COLOR_NUMBER)
         number_font_size = max(4, min(7, cell / mm * 0.3))
         c.setFont(FONT_NAME, number_font_size)
@@ -224,10 +277,68 @@ def _draw_grid_page(c: canvas.Canvas, cw: Crossword, show_answers: bool) -> None
     c.setLineWidth(0.5)
     for row in range(cw.rows):
         for col in range(cw.cols):
-            if cw.grid[row][col]:
+            ch = cw.grid[row][col]
+            if ch and ch not in ('#BLOCK#',):
                 x = start_x + col * cell
                 y = start_y - (row + 1) * cell
                 c.rect(x, y, cell, cell, fill=0, stroke=1)
+
+    # Сканворд: рисуем стрелки ПОВЕРХ всех ячеек
+    if ptype == "scanword" and deferred_arrows:
+        ac = HexColor("#f2cc8f")
+        c.setStrokeColor(ac)
+        c.setFillColor(ac)
+        c.setLineWidth(0.5)
+        aw = cell / mm * 0.15
+
+        for (bx, by, bw, bh, arrow, at_r, at_c) in deferred_arrows:
+            # Края целевой ячейки (PDF: Y растёт вверх)
+            t_left = start_x + at_c * cell
+            t_top = start_y - at_r * cell          # верхний край
+            t_bottom = start_y - (at_r + 1) * cell # нижний край
+            t_cx = t_left + cell / 2
+            t_cy = (t_top + t_bottom) / 2
+
+            if arrow == 'right':
+                # ──▶ остриё на левом краю ячейки
+                sx = bx + bw
+                sy = by + bh / 2
+                c.line(sx, sy, t_left, t_cy)
+                p = c.beginPath()
+                p.moveTo(t_left, t_cy - aw); p.lineTo(t_left + aw, t_cy); p.lineTo(t_left, t_cy + aw); p.close()
+                c.drawPath(p, fill=1, stroke=0)
+            elif arrow == 'down':
+                # │▼ остриё на верхнем краю ячейки (PDF: верх = больше Y)
+                sx = bx + bw / 2
+                sy = by
+                c.line(sx, sy, t_cx, t_top)
+                p = c.beginPath()
+                p.moveTo(t_cx - aw, t_top); p.lineTo(t_cx, t_top - aw); p.lineTo(t_cx + aw, t_top); p.close()
+                c.drawPath(p, fill=1, stroke=0)
+            elif arrow == 'down_right':
+                # ↓→▶ вниз, потом вправо, остриё ▶ на левом краю
+                sx = bx + bw / 2
+                sy = by
+                # Изгиб ЛЕВЕЕ t_left, чтобы последний отрезок шёл ВПРАВО
+                bend_x = min(sx, t_left - aw * 2)
+                bend_y = t_cy
+                c.line(sx, sy, bend_x, bend_y)
+                c.line(bend_x, bend_y, t_left, t_cy)
+                p = c.beginPath()
+                p.moveTo(t_left, t_cy - aw); p.lineTo(t_left + aw, t_cy); p.lineTo(t_left, t_cy + aw); p.close()
+                c.drawPath(p, fill=1, stroke=0)
+            elif arrow == 'right_down':
+                # →↓▼ вправо, потом вниз, остриё ▼ на верхнем краю
+                sx = bx + bw
+                sy = by + bh / 2
+                bend_x = t_cx
+                # Изгиб ВЫШЕ t_top (в PDF: Y вверх = больше), чтобы последний отрезок шёл ВНИЗ
+                bend_y = max(sy, t_top + aw * 2)
+                c.line(sx, sy, bend_x, bend_y)
+                c.line(bend_x, bend_y, t_cx, t_top)
+                p = c.beginPath()
+                p.moveTo(t_cx - aw, t_top); p.lineTo(t_cx, t_top - aw); p.lineTo(t_cx + aw, t_top); p.close()
+                c.drawPath(p, fill=1, stroke=0)
 
     # Крисс-кросс: список слов под сеткой
     if ptype == "crisscross":

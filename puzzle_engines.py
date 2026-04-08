@@ -123,51 +123,247 @@ def generate_codeword(questions: list[Question], title: str = "Кейворд",
 
 
 # ---------------------------------------------------------------------------
-# 4. Сканворд (скандинавский) — подсказки в ячейках сетки
+# 4. Сканворд (скандинавский) — подсказки внутри ячеек сетки
 # ---------------------------------------------------------------------------
+
+def _scanword_find_clue_cell(w, letter_cells, clue_occupied, new_rows, new_cols, new_grid):
+    """Ищет свободную ячейку (или блок NxM) для подсказки рядом с началом слова.
+    
+    Возвращает (row, col, arrow_direction, span_r, span_c, target_r, target_c) или None.
+    
+    arrow указывает направление от блока подсказки к первой букве:
+      - 'right'      → блок слева, стрелка вправо
+      - 'down'       ↓ блок сверху, стрелка вниз
+      - 'down_right' ↓→ блок сверху-слева, стрелка ломаная вниз-вправо
+      - 'right_down' →↓ блок сверху-слева, стрелка ломаная вправо-вниз
+    target_r, target_c — координаты первой буквы слова (куда указывает стрелка).
+    """
+    # Всегда пытаемся 2×2, потом уменьшаем: 2×1, 1×2, 1×1
+    shapes = [(2, 2), (2, 1), (1, 2), (1, 1)]
+    occupied_set = set(letter_cells) | set(clue_occupied.keys())
+
+    def _can_span(start_r, start_c, span_r, span_c):
+        for dr in range(span_r):
+            for dc in range(span_c):
+                r, c = start_r + dr, start_c + dc
+                if r < 0 or r >= new_rows or c < 0 or c >= new_cols:
+                    return False
+                if (r, c) in occupied_set:
+                    return False
+        return True
+
+    def _calc_arrow(cr, cc, sr, sc):
+        """Определяет тип стрелки по положению блока подсказки
+        относительно первой буквы слова И направлению слова.
+        
+        Стрелка должна показывать путь от подсказки к первой букве
+        И направление, в котором читается слово.
+        """
+        block_bottom = cr + sr - 1
+        block_right = cc + sc - 1
+        tr, tc = w.row, w.col
+
+        # Первая буква справа от блока (та же строка или блок содержит строку)
+        directly_right = (block_right == tc - 1) and (cr <= tr <= block_bottom)
+        # Первая буква снизу от блока (тот же столбец или блок содержит столбец)
+        directly_below = (block_bottom == tr - 1) and (cc <= tc <= block_right)
+
+        if directly_right and directly_below:
+            # Угловой случай — выбираем по направлению слова
+            return 'right' if w.direction == 'across' else 'down'
+        if directly_right:
+            # Блок слева от первой буквы
+            if w.direction == 'across':
+                return 'right'       # слово идёт вправо — простая стрелка
+            else:
+                return 'right_down'  # слово идёт вниз — ломаная →↓
+        if directly_below:
+            # Блок сверху от первой буквы
+            if w.direction == 'down':
+                return 'down'        # слово идёт вниз — простая стрелка
+            else:
+                return 'down_right'  # слово идёт вправо — ломаная ↓→
+
+        # Первая буква ниже И правее блока — ломаная стрелка
+        if tr > block_bottom and tc > block_right:
+            return 'down_right' if w.direction == 'across' else 'right_down'
+        # Первая буква правее (но не на той же строке)
+        if tc > block_right:
+            return 'down_right' if w.direction == 'across' else 'right_down'
+        # Первая буква ниже (но не на том же столбце)
+        if tr > block_bottom:
+            return 'down_right' if w.direction == 'across' else 'right_down'
+
+        # Фоллбэк
+        return 'right' if w.direction == 'across' else 'down'
+
+    tr, tc = w.row, w.col
+
+    # Генерируем кандидатов: для каждого размера блока — позиции,
+    # которые обеспечивают правый или нижний край блока рядом с (tr, tc).
+    candidates = []
+    for sr, sc in shapes:
+        # --- Прямо слева (стрелка right) ---
+        for row_off in range(sr):
+            cand_r = tr - row_off
+            cand_c = tc - sc
+            candidates.append((cand_r, cand_c, sr, sc))
+
+        # --- Прямо сверху (стрелка down) ---
+        for col_off in range(sc):
+            cand_r = tr - sr
+            cand_c = tc - col_off
+            candidates.append((cand_r, cand_c, sr, sc))
+
+        # --- По диагонали сверху-слева (ломаная стрелка) ---
+        cand_r = tr - sr
+        cand_c = tc - sc
+        candidates.append((cand_r, cand_c, sr, sc))
+
+        # --- Дополнительные позиции: снизу-слева, сверху-справа ---
+        if sr > 1 or sc > 1:
+            # Снизу-слева
+            for row_off in range(sr):
+                candidates.append((tr + 1 - row_off, tc - sc, sr, sc))
+            # Сверху-справа
+            for col_off in range(sc):
+                candidates.append((tr - sr, tc + 1 - col_off, sr, sc))
+
+    # Убираем дубликаты, сохраняя порядок
+    seen = set()
+    unique = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+
+    for cr, cc, sr, sc in unique:
+        if _can_span(cr, cc, sr, sc):
+            arrow = _calc_arrow(cr, cc, sr, sc)
+            return cr, cc, arrow, sr, sc, tr, tc
+
+    # Фоллбэк: пробуем все формы в расширенном наборе позиций
+    fb_offsets = [
+        (0, -1), (-1, 0), (-1, -1), (1, -1), (-1, 1),
+        (0, -2), (-2, 0), (1, 0), (0, 1),
+    ]
+    for sr, sc in shapes:
+        for dr, dc in fb_offsets:
+            cr, cc = tr + dr, tc + dc
+            if _can_span(cr, cc, sr, sc):
+                arrow = _calc_arrow(cr, cc, sr, sc)
+                return cr, cc, arrow, sr, sc, tr, tc
+
+    return None
+
 
 def generate_scanword(questions: list[Question], title: str = "Сканворд",
                       orientation: str = "auto") -> Crossword:
-    engine = CrosswordEngine()
+    """Генерирует сканворд — кроссворд с подсказками внутри ячеек сетки.
+    
+    Все пустые ячейки заполняются тёмными блоками (#BLOCK#).
+    Стрелки рисуются ВНУТРИ ячейки-подсказки.
+    """
+    if not questions:
+        return Crossword(title=title, puzzle_type="scanword")
+
+    engine = CrosswordEngine(padding=1)
     cw = engine.generate(questions, title=title, orientation=orientation)
     cw.puzzle_type = "scanword"
 
-    # Расширяем сетку на 1 в каждую сторону для размещения ячеек-подсказок
+    if not cw.words:
+        return cw
+
+    # --- Шаг 1: Расширяем сетку на 3 клетки в каждую сторону ---
+    pad = 3
     old_grid = cw.grid
-    new_rows = cw.rows + 2
-    new_cols = cw.cols + 2
+    new_rows = cw.rows + pad * 2
+    new_cols = cw.cols + pad * 2
     new_grid = [['' for _ in range(new_cols)] for _ in range(new_rows)]
 
     for r in range(cw.rows):
         for c in range(cw.cols):
-            new_grid[r + 1][c + 1] = old_grid[r][c]
+            new_grid[r + pad][c + pad] = old_grid[r][c]
 
-    # Сдвигаем слова
     for w in cw.words:
-        w.row += 1
-        w.col += 1
+        w.row += pad
+        w.col += pad
 
-    clue_cells = []  # (row, col, hint_text, arrow_dir)
+    # --- Шаг 2: Собираем множество ячеек с буквами ---
+    letter_cells = set()
+    for r in range(new_rows):
+        for c in range(new_cols):
+            if new_grid[r][c] and new_grid[r][c] != '#CLUE#':
+                letter_cells.add((r, c))
+
+    # --- Шаг 3: Размещаем ячейки-подсказки ---
+    clue_cells = []
+    clue_occupied = {}
+
     for w in cw.words:
-        if w.direction == 'across':
-            cr, cc = w.row, w.col - 1
-            arrow = 'right'
-        else:
-            cr, cc = w.row - 1, w.col
-            arrow = 'down'
-        # Проверяем, что ячейка свободна
-        if 0 <= cr < new_rows and 0 <= cc < new_cols:
-            if not new_grid[cr][cc]:
-                new_grid[cr][cc] = '#CLUE#'
-                hint = w.question.hint
-                if len(hint) > 30:
-                    hint = hint[:28] + ".."
-                clue_cells.append((cr, cc, hint, arrow))
+        result = _scanword_find_clue_cell(
+            w, letter_cells, clue_occupied, new_rows, new_cols, new_grid
+        )
+        if result is None:
+            continue
 
-    cw.grid = new_grid
-    cw.rows = new_rows
-    cw.cols = new_cols
-    cw.extra_data = {"clue_cells": clue_cells}
+        cr, cc, arrow, span_r, span_c, target_r, target_c = result
+        hint = w.question.hint
+
+        for dr in range(span_r):
+            for dc in range(span_c):
+                new_grid[cr + dr][cc + dc] = '#CLUE#'
+                clue_occupied[(cr + dr, cc + dc)] = True
+
+        clue_cells.append((cr, cc, hint, arrow, span_r, span_c, target_r, target_c))
+
+    # --- Шаг 4: Обрезаем пустые строки/столбцы по краям ---
+    used_rows = set()
+    used_cols = set()
+    for r in range(new_rows):
+        for c in range(new_cols):
+            if new_grid[r][c]:
+                used_rows.add(r)
+                used_cols.add(c)
+
+    if not used_rows or not used_cols:
+        cw.grid = new_grid
+        cw.rows = new_rows
+        cw.cols = new_cols
+        cw.extra_data = {"clue_cells": clue_cells}
+        return cw
+
+    min_r, max_r = min(used_rows), max(used_rows)
+    min_c, max_c = min(used_cols), max(used_cols)
+
+    trim_grid = []
+    for r in range(min_r, max_r + 1):
+        row = []
+        for c in range(min_c, max_c + 1):
+            row.append(new_grid[r][c])
+        trim_grid.append(row)
+
+    for w in cw.words:
+        w.row -= min_r
+        w.col -= min_c
+
+    trimmed_clues = []
+    for cr, cc, hint, arrow, sr, sc, t_r, t_c in clue_cells:
+        trimmed_clues.append((cr - min_r, cc - min_c, hint, arrow, sr, sc, t_r - min_r, t_c - min_c))
+
+    final_rows = max_r - min_r + 1
+    final_cols = max_c - min_c + 1
+
+    # --- Шаг 5: Заполняем ВСЕ пустые ячейки тёмными блоками ---
+    for r in range(final_rows):
+        for c in range(final_cols):
+            if not trim_grid[r][c]:
+                trim_grid[r][c] = '#BLOCK#'
+
+    cw.grid = trim_grid
+    cw.rows = final_rows
+    cw.cols = final_cols
+    cw.extra_data = {"clue_cells": trimmed_clues}
     return cw
 
 

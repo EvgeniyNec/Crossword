@@ -70,6 +70,7 @@ class CrosswordApp:
         self.orientation = tk.StringVar(value="auto")
         self.puzzle_type_var = tk.StringVar(value="classic")
         self.engine = CrosswordEngine()
+        self.cell_size_var = tk.IntVar(value=40)
         # Маппинг: question answer -> номер в кроссворде (заполняется после генерации)
         self._cw_numbers: dict[int, list[int]] = {}  # question_index -> [cw_numbers]
         # Для inline-редактирования
@@ -264,6 +265,13 @@ class CrosswordApp:
             ttk.Radiobutton(settings_frame, text=label, variable=self.orientation,
                             value=val).pack(side=tk.LEFT, padx=2)
 
+        ttk.Separator(settings_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6)
+        ttk.Label(settings_frame, text="Ячейка (px):").pack(side=tk.LEFT)
+        cell_spin = ttk.Spinbox(settings_frame, from_=20, to=200, width=4,
+                                textvariable=self.cell_size_var, command=self._redraw)
+        cell_spin.pack(side=tk.LEFT, padx=2)
+        cell_spin.bind("<Return>", lambda e: self._redraw())
+
         # Панель экспорта (вторая строка)
         export_bar = ttk.LabelFrame(parent, text="Экспорт", padding=3)
         export_bar.pack(fill=tk.X, padx=10, pady=(5, 2))
@@ -302,8 +310,17 @@ class CrosswordApp:
 
         self.canvas = tk.Canvas(canvas_frame, bg="#fdf8f3", highlightthickness=1,
                                 highlightbackground=ACCENT_LIGHT)
+        scroll_x = ttk.Scrollbar(canvas_frame, orient=tk.HORIZONTAL, command=self.canvas.xview)
+        scroll_y = ttk.Scrollbar(canvas_frame, orient=tk.VERTICAL, command=self.canvas.yview)
+        self.canvas.configure(xscrollcommand=scroll_x.set, yscrollcommand=scroll_y.set)
+        scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
+        scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
         self.canvas.pack(fill=tk.BOTH, expand=True)
         self.canvas.bind("<Button-1>", self._on_canvas_click)
+        self.canvas.bind("<MouseWheel>",
+                         lambda e: self.canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+        self.canvas.bind("<Shift-MouseWheel>",
+                         lambda e: self.canvas.xview_scroll(-1 * (e.delta // 120), "units"))
 
         # Статусная строка
         self.status_var = tk.StringVar(value="Добавьте вопросы и нажмите «Сгенерировать»")
@@ -818,12 +835,24 @@ class CrosswordApp:
         ptype = cw.puzzle_type
 
         pad = 30
-        cell = min((canvas_w - 2 * pad) / cw.cols, (canvas_h - 2 * pad) / cw.rows)
-        cell = min(cell, 45)
+        user_cell = self.cell_size_var.get()
+        cell = user_cell
         cell = max(cell, 12)
 
-        ox = (canvas_w - cw.cols * cell) / 2
-        oy = (canvas_h - cw.rows * cell) / 2
+        total_w = cw.cols * cell + 2 * pad
+        total_h = cw.rows * cell + 2 * pad
+        ox = pad
+        oy = pad
+
+        # Если сетка меньше canvas — центрируем
+        if total_w < canvas_w:
+            ox = (canvas_w - cw.cols * cell) / 2
+            total_w = canvas_w
+        if total_h < canvas_h:
+            oy = (canvas_h - cw.rows * cell) / 2
+            total_h = canvas_h
+
+        self.canvas.configure(scrollregion=(0, 0, total_w, total_h))
 
         self._grid_params = {"ox": ox, "oy": oy, "cell": cell,
                              "rows": cw.rows, "cols": cw.cols}
@@ -840,14 +869,28 @@ class CrosswordApp:
                 numbers[key] = w.number
 
         # Данные сканворда
-        clue_cells = {}
+        clue_cells = {}       # (row, col) -> [(hint, arrow, span_r, span_c)]
+        clue_skip = set()     # ячейки, которые являются продолжением span-блока
         if ptype == "scanword":
-            for cr, cc, hint, arrow in cw.extra_data.get("clue_cells", []):
-                clue_cells[(cr, cc)] = (hint, arrow)
+            for item in cw.extra_data.get("clue_cells", []):
+                cr, cc, hint, arrow = item[0], item[1], item[2], item[3]
+                sr = item[4] if len(item) > 4 else 1
+                sc = item[5] if len(item) > 5 else 1
+                t_r = item[6] if len(item) > 6 else None
+                t_c = item[7] if len(item) > 7 else None
+                clue_cells.setdefault((cr, cc), []).append((hint, arrow, sr, sc, t_r, t_c))
+                # Помечаем все ячейки блока кроме первой как skip
+                for dr in range(sr):
+                    for dc in range(sc):
+                        if dr != 0 or dc != 0:
+                            clue_skip.add((cr + dr, cc + dc))
 
         # Данные кейворда
         letter_map = cw.extra_data.get("letter_map", {})
         hint_letters = cw.extra_data.get("hint_letters", [])
+
+        # Отложенные стрелки сканворда (рисуем поверх всех ячеек)
+        deferred_arrows = []
 
         for row in range(cw.rows):
             for col in range(cw.cols):
@@ -858,37 +901,55 @@ class CrosswordApp:
 
                 ch = cw.grid[row][col]
 
-                # Сканворд: ячейка-подсказка
-                if ptype == "scanword" and (row, col) in clue_cells:
-                    hint, arrow = clue_cells[(row, col)]
-                    self.canvas.create_rectangle(x1, y1, x2, y2,
-                                                 fill=ACCENT_DARK, outline=CELL_BORDER)
-                    fs = max(5, int(cell * 0.18))
-                    # Текст подсказки
-                    self.canvas.create_text(x1 + cell / 2, y1 + cell / 2 - 2,
-                                            text=hint[:15], font=("Segoe UI", fs),
-                                            fill="white", width=cell - 2, anchor="center")
-                    # Стрелка
-                    arrow_size = cell * 0.2
-                    if arrow == 'right':
-                        ax = x2 - 3
-                        ay = y1 + cell / 2
-                        self.canvas.create_text(ax, ay, text="→",
-                                                font=("Segoe UI", max(6, int(cell * 0.25))),
-                                                fill=GOLD_ACCENT, anchor="e")
-                    else:
-                        ax = x1 + cell / 2
-                        ay = y2 - 3
-                        self.canvas.create_text(ax, ay, text="↓",
-                                                font=("Segoe UI", max(6, int(cell * 0.25))),
-                                                fill=GOLD_ACCENT, anchor="s")
+                # Сканворд: пропускаем ячейки из продолжения span
+                if ptype == "scanword" and (row, col) in clue_skip:
                     continue
 
-                if not ch:
-                    # Филворд: все клетки заполнены, но на всякий случай
-                    if ptype in ("filword", "honeycomb"):
+                # Сканворд: ячейка-подсказка (с возможным span)
+                if ptype == "scanword" and (row, col) in clue_cells:
+                    hints_list = clue_cells[(row, col)]
+                    hint, arrow, sr, sc, t_r, t_c = hints_list[0]
+                    bw = sc * cell
+                    bh = sr * cell
+                    bx2 = x1 + bw
+                    by2 = y1 + bh
+
+                    self.canvas.create_rectangle(x1, y1, bx2, by2,
+                                                 fill=ACCENT_DARK, outline=CELL_BORDER)
+
+                    # Шрифт пропорционально размеру блока
+                    fs = max(5, int(cell * 0.14))
+
+                    # Текст по центру блока
+                    cx = x1 + bw / 2
+                    cy = y1 + bh / 2
+                    self.canvas.create_text(
+                        cx, cy,
+                        text=hint, font=("Segoe UI", fs),
+                        fill="white", width=bw - 4, anchor="center",
+                        justify="center"
+                    )
+                    # Маска: скрываем текст, который вылез за блок
+                    if bh < cell * 3:
+                        self.canvas.create_rectangle(
+                            x1, by2, bx2, by2 + 1,
+                            fill=CELL_BORDER, outline=CELL_BORDER)
+
+                    # Запоминаем стрелку для отрисовки поверх всего
+                    if t_r is not None and t_c is not None:
+                        deferred_arrows.append((x1, y1, bw, bh, arrow, t_r, t_c))
+                    continue
+
+                # Тёмные блоки и пустые ячейки
+                if not ch or ch == '#CLUE#':
+                    if ptype in ("filword", "honeycomb") and not ch:
                         self.canvas.create_rectangle(x1, y1, x2, y2,
                                                      fill=CELL_EMPTY, outline="#ddd")
+                    continue
+                if ch == '#BLOCK#':
+                    if ptype == "scanword":
+                        self.canvas.create_rectangle(x1, y1, x2, y2,
+                                                     fill=ACCENT_DARK, outline=CELL_BORDER)
                     continue
 
                 # Подсветка
@@ -914,8 +975,8 @@ class CrosswordApp:
                 self.canvas.create_rectangle(x1, y1, x2, y2,
                                              fill=fill, outline=border, width=border_w)
 
-                # Номер (не для крисс-кросса и кейворда)
-                if ptype not in ("crisscross", "codeword") and (row, col) in numbers:
+                # Номер (не для крисс-кросса, кейворда, сканворда)
+                if ptype not in ("crisscross", "codeword", "scanword") and (row, col) in numbers:
                     num_size = max(7, int(cell * 0.25))
                     self.canvas.create_text(
                         x1 + 3, y1 + 2,
@@ -951,6 +1012,55 @@ class CrosswordApp:
                         font=("Segoe UI", letter_size),
                         fill=LETTER_COLOR,
                     )
+
+        # Сканворд: рисуем стрелки ПОВЕРХ всех ячеек
+        if ptype == "scanword" and deferred_arrows:
+            aw = max(3, int(cell * 0.15))
+            lw = max(1, int(cell * 0.04))
+            ac = GOLD_ACCENT
+            for (ax1, ay1, abw, abh, arrow, at_r, at_c) in deferred_arrows:
+                abx2 = ax1 + abw
+                aby2 = ay1 + abh
+                # Края целевой ячейки
+                t_left = ox + at_c * cell
+                t_top = oy + at_r * cell
+                t_cx = t_left + cell / 2
+                t_cy = t_top + cell / 2
+
+                if arrow == 'right':
+                    sx = abx2
+                    sy = ay1 + abh / 2
+                    self.canvas.create_line(sx, sy, t_left, t_cy, fill=ac, width=lw)
+                    self.canvas.create_polygon(
+                        t_left, t_cy - aw, t_left + aw, t_cy, t_left, t_cy + aw, fill=ac)
+                elif arrow == 'down':
+                    sx = ax1 + abw / 2
+                    sy = aby2
+                    self.canvas.create_line(sx, sy, t_cx, t_top, fill=ac, width=lw)
+                    self.canvas.create_polygon(
+                        t_cx - aw, t_top, t_cx, t_top + aw, t_cx + aw, t_top, fill=ac)
+                elif arrow == 'down_right':
+                    # ↓ потом → : линия вниз, изгиб, линия вправо, ▶ на краю ячейки
+                    sx = ax1 + abw / 2
+                    sy = aby2
+                    # Изгиб должен быть ЛЕВЕЕ t_left, чтобы последний отрезок шёл ВПРАВО
+                    bend_x = min(sx, t_left - aw * 2)
+                    bend_y = t_cy
+                    self.canvas.create_line(sx, sy, bend_x, bend_y, fill=ac, width=lw)
+                    self.canvas.create_line(bend_x, bend_y, t_left, t_cy, fill=ac, width=lw)
+                    self.canvas.create_polygon(
+                        t_left, t_cy - aw, t_left + aw, t_cy, t_left, t_cy + aw, fill=ac)
+                elif arrow == 'right_down':
+                    # → потом ↓ : линия вправо, изгиб, линия вниз, ▼ на краю ячейки
+                    sx = abx2
+                    sy = ay1 + abh / 2
+                    # Изгиб должен быть ВЫШЕ t_top, чтобы последний отрезок шёл ВНИЗ
+                    bend_x = t_cx
+                    bend_y = min(sy, t_top - aw * 2)
+                    self.canvas.create_line(sx, sy, bend_x, bend_y, fill=ac, width=lw)
+                    self.canvas.create_line(bend_x, bend_y, t_cx, t_top, fill=ac, width=lw)
+                    self.canvas.create_polygon(
+                        t_cx - aw, t_top, t_cx, t_top + aw, t_cx + aw, t_top, fill=ac)
 
         # Крисс-кросс: список слов справа
         if ptype == "crisscross":
@@ -1087,7 +1197,7 @@ class CrosswordApp:
         pad = 30
         hex_w = (canvas_w - 2 * pad) / (cw.cols + 0.5)
         hex_h = (canvas_h - 2 * pad) / (cw.rows * 0.75 + 0.25)
-        hex_size = min(hex_w / math.sqrt(3), hex_h / 2, 25)
+        hex_size = min(hex_w / math.sqrt(3), hex_h / 2, self.cell_size_var.get() * 0.6)
         hex_size = max(hex_size, 10)
 
         self._grid_params = {"type": "honeycomb", "hex_size": hex_size,
@@ -1141,7 +1251,7 @@ class CrosswordApp:
         avail_w = canvas_w - clue_w - 2 * pad
         avail_h = canvas_h - clue_h - 2 * pad
         cell = min(avail_w / max(cw.cols, 1), avail_h / max(cw.rows, 1))
-        cell = min(cell, 30)
+        cell = min(cell, self.cell_size_var.get())
         cell = max(cell, 8)
 
         ox = clue_w + pad
@@ -1216,7 +1326,7 @@ class CrosswordApp:
             return
 
         try:
-            export_pdf(self.crossword, path, show_answers=with_answers)
+            export_pdf(self.crossword, path, show_answers=with_answers, cell_size=self.cell_size_var.get())
             messagebox.showinfo("Готово", f"PDF сохранён:\n{path}")
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось создать PDF:\n{e}")
@@ -1238,7 +1348,7 @@ class CrosswordApp:
             return
 
         try:
-            export_docx(self.crossword, path, show_answers=with_answers)
+            export_docx(self.crossword, path, show_answers=with_answers, cell_size_px=self.cell_size_var.get())
             messagebox.showinfo("Готово", f"Word-документ сохранён:\n{path}")
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось создать DOCX:\n{e}")
@@ -1262,11 +1372,13 @@ class CrosswordApp:
         try:
             if full:
                 export_svg_with_clues(
-                    self.crossword, path, show_answers=self.show_answers.get()
+                    self.crossword, path, show_answers=self.show_answers.get(),
+                    cell_size=self.cell_size_var.get()
                 )
             else:
                 export_svg(
-                    self.crossword, path, show_answers=self.show_answers.get()
+                    self.crossword, path, show_answers=self.show_answers.get(),
+                    cell_size=self.cell_size_var.get()
                 )
             messagebox.showinfo("Готово", f"SVG сохранён:\n{path}\n\nОткрывается в CorelDRAW, Illustrator, Inkscape")
         except Exception as e:
@@ -1288,7 +1400,8 @@ class CrosswordApp:
             return
 
         try:
-            export_png(self.crossword, path, show_answers=self.show_answers.get())
+            export_png(self.crossword, path, show_answers=self.show_answers.get(),
+                       cell_size=self.cell_size_var.get())
             messagebox.showinfo("Готово", f"PNG сохранён (прозрачный фон):\n{path}")
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось создать PNG:\n{e}")
@@ -1309,7 +1422,8 @@ class CrosswordApp:
             return
 
         try:
-            export_jpg(self.crossword, path, show_answers=self.show_answers.get())
+            export_jpg(self.crossword, path, show_answers=self.show_answers.get(),
+                       cell_size=self.cell_size_var.get())
             messagebox.showinfo("Готово", f"JPG сохранён:\n{path}")
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось создать JPG:\n{e}")

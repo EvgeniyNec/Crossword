@@ -11,7 +11,8 @@ from docx.oxml import parse_xml
 from models import Crossword
 
 
-def export_docx(crossword: Crossword, filepath: str, show_answers: bool = False) -> None:
+def export_docx(crossword: Crossword, filepath: str, show_answers: bool = False,
+                cell_size_px: int = None) -> None:
     """Экспортирует кроссворд в DOCX-файл."""
     doc = Document()
 
@@ -22,14 +23,15 @@ def export_docx(crossword: Crossword, filepath: str, show_answers: bool = False)
     section.left_margin = Cm(1.5)
     section.right_margin = Cm(1.5)
 
-    _add_crossword_page(doc, crossword, show_answers)
+    _add_crossword_page(doc, crossword, show_answers, cell_size_px)
     doc.add_page_break()
     _add_clues_page(doc, crossword)
 
     doc.save(filepath)
 
 
-def _add_crossword_page(doc: Document, cw: Crossword, show_answers: bool) -> None:
+def _add_crossword_page(doc: Document, cw: Crossword, show_answers: bool,
+                        cell_size_px: int = None) -> None:
     """Добавляет страницу с сеткой кроссворда."""
     # Заголовок
     title = cw.title
@@ -55,9 +57,20 @@ def _add_crossword_page(doc: Document, cw: Crossword, show_answers: bool) -> Non
         if key not in numbers:
             numbers[key] = w.number
 
+    # Данные сканворда
+    ptype = cw.puzzle_type
+    clue_cells = {}
+    if ptype == "scanword":
+        for item in cw.extra_data.get("clue_cells", []):
+            cr, cc, hint_text, arrow = item[0], item[1], item[2], item[3]
+            sr = item[4] if len(item) > 4 else 1
+            sc = item[5] if len(item) > 5 else 1
+            clue_cells[(cr, cc)] = (hint_text, arrow, sr, sc)  # t_r, t_c ignored in docx
+
     # Вычисляем размер ячейки (чтобы поместиться на страницу)
     available_width = Mm(170)  # ~A4 минус поля
-    cell_size = min(Mm(8), available_width / cw.cols)
+    max_cell = Mm(cell_size_px * 0.26) if cell_size_px else Mm(8)
+    cell_size = min(max_cell, available_width / cw.cols)
     cell_size = max(cell_size, Mm(4))  # минимум
 
     # Таблица для сетки
@@ -88,7 +101,42 @@ def _add_crossword_page(doc: Document, cw: Crossword, show_answers: bool) -> Non
             cell.width = cell_size
 
             ch = cw.grid[row_idx][col_idx]
-            if ch:
+
+            # Сканворд: ячейка-подсказка
+            if ptype == "scanword" and (row_idx, col_idx) in clue_cells:
+                hint, arrow, sr, sc = clue_cells[(row_idx, col_idx)][:4]
+                _set_cell_border(cell, "3D5A80")
+                _set_cell_shading(cell, "3D5A80")
+                p = cell.paragraphs[0]
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                arrow_map = {'right': '▶', 'down': '▼', 'up': '▲', 'left': '◀',
+                             'down_right': '↘', 'right_down': '↘'}
+                symbol = arrow_map.get(arrow, '▶')
+                run = p.add_run(f"{hint} {symbol}")
+                run.font.size = Pt(4)
+                run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+                # Merge cells for rectangular span
+                if sr > 1 or sc > 1:
+                    end_row = min(row_idx + sr - 1, cw.rows - 1)
+                    end_col = min(col_idx + sc - 1, cw.cols - 1)
+                    if end_row > row_idx or end_col > col_idx:
+                        bottom_right = table.rows[end_row].cells[end_col]
+                        cell.merge(bottom_right)
+                _set_cell_margins(cell, top=10, bottom=10, left=20, right=20)
+                continue
+
+            # Сканворд: тёмные блоки
+            if ptype == "scanword" and ch == '#BLOCK#':
+                _set_cell_border(cell, "3D5A80")
+                _set_cell_shading(cell, "3D5A80")
+                _set_cell_margins(cell, top=10, bottom=10, left=10, right=10)
+                continue
+
+            # Пропускаем пустые/служебные ячейки
+            if ptype == "scanword" and (not ch or ch == '#CLUE#'):
+                continue
+
+            if ch and ch not in ('#CLUE#', '#BLOCK#'):
                 # Белая клетка с рамкой
                 _set_cell_border(cell, "333333")
                 _set_cell_shading(cell, "FFFFFF")
@@ -96,9 +144,9 @@ def _add_crossword_page(doc: Document, cw: Crossword, show_answers: bool) -> Non
                 p = cell.paragraphs[0]
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-                # Номер
+                # Номер (не для сканворда)
                 num_key = (row_idx, col_idx)
-                if num_key in numbers:
+                if ptype != "scanword" and num_key in numbers:
                     run_num = p.add_run(str(numbers[num_key]))
                     run_num.font.size = Pt(5)
                     run_num.font.color.rgb = RGBColor(0x1a, 0x73, 0xe8)
