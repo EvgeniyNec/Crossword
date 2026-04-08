@@ -58,7 +58,8 @@ class CrosswordApp:
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("✝ Кроссворд — Воскресная школа")
+        from main import VERSION
+        self.root.title(f"✝ Кроссворд — Воскресная школа  v{VERSION}")
         self.root.geometry("1200x750")
         self.root.minsize(900, 600)
         self.root.configure(bg=BG_COLOR)
@@ -381,7 +382,197 @@ class CrosswordApp:
         ttk.Button(btn_frame, text="Предпросмотр", style="Accent.TButton", command=do_preview).pack(side=tk.LEFT, padx=3)
         ttk.Button(btn_frame, text="Добавить к текущим", style="Green.TButton", command=do_import).pack(side=tk.LEFT, padx=3)
         ttk.Button(btn_frame, text="Заменить все", style="Warm.TButton", command=do_replace).pack(side=tk.LEFT, padx=3)
+        ttk.Button(btn_frame, text="🤖 Промпт для ИИ", command=lambda: self._ai_prompt_dialog(dialog)).pack(side=tk.LEFT, padx=3)
         ttk.Button(btn_frame, text="Отмена", command=dialog.destroy).pack(side=tk.RIGHT, padx=3)
+
+    def _ai_prompt_dialog(self, parent_dialog=None) -> None:
+        """Модальное окно с промптом для ИИ-генерации вопросов."""
+        owner = parent_dialog or self.root
+        dialog = tk.Toplevel(owner)
+        dialog.title("Промпт для ИИ")
+        dialog.geometry("750x750")
+        dialog.transient(owner)
+        dialog.grab_set()
+
+        # Пояснение
+        info_text = (
+            "Если вы умеете работать с Иван Ивановичем \U0001f916 — передайте ему этот промпт, "
+            "и он сгенерирует вопросы в нужном формате.\n"
+            "Количество вопросов для каждой категории можете скорректировать ниже.\n"
+            "Это базовый промпт для вашего удобства.\n\n"
+            "⚠️ Помните: Иван Иванович — помощник, а не богослов! "
+            "Он может ошибаться в цитатах, ссылках и даже придумывать несуществующие стихи. "
+            "Качество ответов зависит от модели ИИ, которую вы используете. "
+            "Пожалуйста, всегда проверяйте сгенерированные вопросы перед использованием — "
+            "особенно ссылки на Библию и правильность подсказок. "
+            "Доверяй, но проверяй! 😊"
+        )
+        ttk.Label(
+            dialog, text=info_text, justify="left",
+            font=("Segoe UI", 9), wraplength=650,
+        ).pack(padx=15, pady=(15, 10), anchor="w")
+
+        # Фрейм с настройками количества
+        counts_frame = ttk.LabelFrame(dialog, text="Количество вопросов по категориям", padding=8)
+        counts_frame.pack(fill=tk.X, padx=15, pady=(0, 10))
+
+        cat_vars = {}
+        for i, cat in enumerate(CATEGORIES):
+            ttk.Label(counts_frame, text=f"{cat}:").grid(row=i, column=0, sticky="w", padx=(5, 10), pady=2)
+            var = tk.IntVar(value=5)
+            spin = ttk.Spinbox(counts_frame, from_=0, to=50, textvariable=var, width=5)
+            spin.grid(row=i, column=1, sticky="w", pady=2)
+            cat_vars[cat] = var
+            var.trace_add("write", lambda *_: self.root.after_idle(refresh_prompt))
+
+        # Сложность
+        diff_frame = ttk.LabelFrame(dialog, text="Сложность подсказок", padding=8)
+        diff_frame.pack(fill=tk.X, padx=15, pady=(0, 10))
+
+        difficulty_var = tk.IntVar(value=1)
+        diff_descriptions = {
+            1: "Лёгкий — простые и очевидные подсказки",
+            2: "Средний — требуют размышления",
+            3: "Сложный — завуалированные, с отсылками",
+        }
+        for val, desc in diff_descriptions.items():
+            ttk.Radiobutton(diff_frame, text=desc, variable=difficulty_var, value=val).pack(anchor="w", pady=1)
+        difficulty_var.trace_add("write", lambda *_: self.root.after_idle(refresh_prompt))
+
+        # Кнопки внизу (фиксированные, всегда видны)
+        bottom_frame = ttk.Frame(dialog)
+        bottom_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=15, pady=(5, 15))
+
+        status_lbl = ttk.Label(bottom_frame, text="", foreground="#2a7d2a")
+        status_lbl.pack(side=tk.BOTTOM, anchor="w", pady=(3, 0))
+
+        btn_frame = ttk.Frame(bottom_frame)
+        btn_frame.pack(fill=tk.X)
+
+        def copy_prompt():
+            dialog.clipboard_clear()
+            dialog.clipboard_append(prompt_text.get("1.0", tk.END).strip())
+            status_lbl.config(text="✓ Скопировано в буфер обмена!")
+
+        ttk.Button(btn_frame, text="Копировать", style="Green.TButton", command=copy_prompt).pack(side=tk.LEFT, padx=3)
+        ttk.Button(btn_frame, text="Закрыть", command=dialog.destroy).pack(side=tk.RIGHT, padx=3)
+
+        # Промпт (заполняет оставшееся пространство)
+        prompt_frame = ttk.Frame(dialog)
+        prompt_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 5))
+
+        prompt_text = tk.Text(prompt_frame, wrap=tk.WORD, font=("Consolas", 9))
+        p_scroll = ttk.Scrollbar(prompt_frame, orient=tk.VERTICAL, command=prompt_text.yview)
+        prompt_text.configure(yscrollcommand=p_scroll.set)
+        prompt_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        p_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        def build_prompt():
+            parts = []
+            active_cats = []
+            for cat in CATEGORIES:
+                n = cat_vars[cat].get()
+                if n > 0:
+                    parts.append(f"- {cat}: {n} вопросов")
+                    active_cats.append(cat)
+            counts_block = "\n".join(parts) if parts else "- (не выбрано)"
+
+            diff = difficulty_var.get()
+
+            # Динамический шаблон — только выбранные категории
+            example_refs = {
+                "Ветхий Завет": "(Быт. 1:1)",
+                "Новый Завет": "(Мф. 4:19)",
+                "Визуальные подсказки": "(Быт. 6:14)",
+                "Общие": "(Ин. 3:16)",
+            }
+            template_lines = []
+            for cat in active_cats:
+                ref = example_refs.get(cat, "")
+                template_lines.append(f"\n{cat}")
+                template_lines.append(f"ОТВЕТ: подсказка {ref}")
+            template_block = "\n".join(template_lines) if template_lines else "\n(нет категорий)"
+
+            # Правило про визуальные подсказки только если категория выбрана
+            visual_rule = ""
+            if "Визуальные подсказки" in active_cats:
+                visual_rule = "Категория \"Визуальные подсказки\" — ответ описывает предмет/символ, который можно нарисовать.\n"
+
+            # Описание сложности
+            if diff == 1:
+                diff_block = (
+                    "Уровень сложности: 1 (лёгкий).\n"
+                    "Подсказки должны быть максимально простыми и очевидными. "
+                    "Ребёнок сразу должен понять ответ из подсказки.\n"
+                    "Пример: РАДУГА: Какой знак завета Бог поставил на небе после потопа? (Быт. 9:13)\n"
+                    "Пример: НОЙ: Кто построил ковчег, чтобы спастись от потопа? (Быт. 6:14)\n"
+                )
+            elif diff == 2:
+                diff_block = (
+                    "Уровень сложности: 2 (средний).\n"
+                    "Подсказки требуют размышления, но логически ведут к ответу.\n"
+                    "Пример: РАДУГА: Знамение завета Бога с Ноем, появляющееся в облаке (Быт. 9:13)\n"
+                    "Пример: НОЙ: Праведник, которому Бог повелел взять в ковчег каждой твари по паре (Быт. 7:2)\n"
+                )
+            else:
+                diff_block = (
+                    "Уровень сложности: 3 (сложный).\n"
+                    "Подсказки завуалированные — не называют ответ прямо, "
+                    "а описывают его через контекст, метафору или косвенный признак.\n"
+                    "Пример: РАДУГА: «Я полагаю дугу Мою в облаке» — о каком знамении речь? (Быт. 9:13)\n"
+                    "Пример: НОЙ: Единственный в своём поколении, кого Бог назвал праведным (Быт. 7:1)\n"
+                )
+
+            return (
+                "Сгенерируй набор вопросов для кроссворда воскресной школы.\n"
+                "\n"
+                "Категории и количество:\n"
+                f"{counts_block}\n"
+                "\n"
+                f"{diff_block}\n"
+                "ВАЖНО: Генерируй вопросы ТОЛЬКО для перечисленных выше категорий. "
+                "Категории с 0 вопросов НЕ включай в ответ.\n"
+                "\n"
+                "Формат вывода — простой текст, строго по шаблону:\n"
+                f"{template_block}\n"
+                "\n"
+                "Правила:\n"
+                "1. ОТВЕТ — одно слово, ЗАГЛАВНЫМИ буквами, только русские буквы (без пробелов, дефисов, цифр). "
+                "Слово должно быть полным и грамматически правильным (именительный падеж, единственное число). "
+                "Например: ПАВЕЛ (не ПАВЛ), МОИСЕЙ (не МОИСЕ).\n"
+                "2. Подсказка НЕ ДОЛЖНА содержать слово-ответ ни в какой форме (однокоренные слова, падежи, "
+                "склонения тоже запрещены). Плохо: 'ВЕРА: праведный верою жив будет' (есть 'верою'). "
+                "Плохо: 'ГРЕХ: смерть через грех' (есть 'грех'). "
+                "Хорошо: 'ВЕРА: Без неё невозможно угодить Богу (Евр. 11:6)'. "
+                "Хорошо: 'ГРЕХ: Что вошло в мир через одного человека и принесло смерть всем? (Рим. 5:12)'.\n"
+                "3. Подсказка должна ЛОГИЧЕСКИ вести к ответу — прочитав подсказку, человек должен понять, "
+                "ПОЧЕМУ ответ именно это слово. Подсказка может быть длинной (1–2 предложения), "
+                "если это нужно для ясности.\n"
+                "4. После подсказки в скобках укажи ссылку на конкретный стих Библии: (Быт. 6:14) или (Мф. 4:19).\n"
+                "5. Каждая категория начинается с заголовка на отдельной строке.\n"
+                "6. Ответы должны быть ТОЛЬКО на русском языке.\n"
+                f"{'7. ' + visual_rule if visual_rule else ''}"
+                f"{'8' if visual_rule else '7'}. Ответы должны быть от 3 до 15 букв.\n"
+                f"{'9' if visual_rule else '8'}. Не повторяй ответы.\n"
+                f"{'10' if visual_rule else '9'}. Вопросы должны быть подходящими для детей воскресной школы.\n"
+                f"{'11' if visual_rule else '10'}. Используй ТОЛЬКО канонические книги Синодального перевода Библии (66 книг). "
+                "Неканонические/второканонические книги не использовать.\n"
+                f"{'12' if visual_rule else '11'}. Если в подсказке упоминается библейская фраза или цитата — "
+                "приводи её ТОЧНО по Синодальному переводу, дословно. "
+                "Не пересказывай и не искажай текст Писания.\n"
+                f"{'13' if visual_rule else '12'}. Проверяй правописание имён собственных: "
+                "Моисей, Авраам, Павел, Пётр, Иаков, Елисей, Иезекииль и т.д.\n"
+                f"{'14' if visual_rule else '13'}. Перед выводом проверь каждую подсказку: "
+                "если в ней есть слово-ответ или его однокоренная форма — перепиши подсказку.\n"
+                "\n"
+                "Выведи только вопросы в указанном формате, без пояснений."
+            )
+
+        def refresh_prompt():
+            prompt_text.delete("1.0", tk.END)
+            prompt_text.insert("1.0", build_prompt())
+
+        refresh_prompt()
 
     def _clear_image(self) -> None:
         """Очистка поля картинки."""

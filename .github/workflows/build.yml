@@ -50,11 +50,3 @@ jobs:
           name: Crossword-Mac
           path: dist/Crossword.app
           if-no-files-found: warn
-
-      - name: Upload Mac binary (fallback)
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
-        with:
-          name: Crossword-Mac-Binary
-          path: dist/Crossword
-          if-no-files-found: warn
