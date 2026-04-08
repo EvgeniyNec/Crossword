@@ -439,6 +439,16 @@ class CrosswordApp:
             ttk.Radiobutton(diff_frame, text=desc, variable=difficulty_var, value=val).pack(anchor="w", pady=1)
         difficulty_var.trace_add("write", lambda *_: self.root.after_idle(refresh_prompt))
 
+        # Тема
+        theme_frame = ttk.LabelFrame(dialog, text="Тема (необязательно)", padding=8)
+        theme_frame.pack(fill=tk.X, padx=15, pady=(0, 10))
+        ttk.Label(theme_frame, text="Например: о Давиде, о любви, притчи Иисуса",
+                  foreground="#888", font=("Segoe UI", 8)).pack(anchor="w")
+        theme_var = tk.StringVar(value="")
+        theme_entry = ttk.Entry(theme_frame, textvariable=theme_var, font=("Segoe UI", 10))
+        theme_entry.pack(fill=tk.X, pady=(3, 0))
+        theme_var.trace_add("write", lambda *_: self.root.after_idle(refresh_prompt))
+
         # Кнопки внизу (фиксированные, всегда видны)
         bottom_frame = ttk.Frame(dialog)
         bottom_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=15, pady=(5, 15))
@@ -523,8 +533,17 @@ class CrosswordApp:
                     "Пример: НОЙ: Единственный в своём поколении, кого Бог назвал праведным (Быт. 7:1)\n"
                 )
 
+            theme = theme_var.get().strip()
+            theme_block = ""
+            if theme:
+                theme_block = (
+                    f"\nТема кроссворда: {theme}.\n"
+                    "Все вопросы и ответы должны быть связаны с этой темой.\n"
+                )
+
             return (
                 "Сгенерируй набор вопросов для кроссворда воскресной школы.\n"
+                f"{theme_block}"
                 "\n"
                 "Категории и количество:\n"
                 f"{counts_block}\n"
