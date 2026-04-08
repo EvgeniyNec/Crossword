@@ -917,23 +917,56 @@ class CrosswordApp:
                     self.canvas.create_rectangle(x1, y1, bx2, by2,
                                                  fill=ACCENT_DARK, outline=CELL_BORDER)
 
-                    # Шрифт пропорционально размеру блока
-                    fs = max(5, int(cell * 0.14))
+                    # Авто-масштабирование: уменьшаем шрифт пока ВЕСЬ текст не влезет
+                    import tkinter.font as tkfont
+                    pad = 4
+                    avail_w = bw - pad * 2
+                    avail_h = bh - pad * 2
+                    best_lines = [hint]
+                    best_fs = 3
 
-                    # Текст по центру блока
-                    cx = x1 + bw / 2
-                    cy = y1 + bh / 2
+                    for try_fs in range(max(3, int(cell * 0.30)), 2, -1):
+                        fobj = tkfont.Font(family="Segoe UI", size=try_fs)
+                        line_h = fobj.metrics("linespace")
+                        max_lines = max(1, int(avail_h / line_h))
+
+                        # Разбиваем на строки с реальным измерением ширины
+                        words = hint.split()
+                        lines = []
+                        cur = ""
+                        for w_txt in words:
+                            test = (cur + " " + w_txt).strip() if cur else w_txt
+                            if fobj.measure(test) <= avail_w:
+                                cur = test
+                            else:
+                                if cur:
+                                    lines.append(cur)
+                                cur = w_txt
+                                # Если одно слово шире блока — принудительно разрываем
+                                while fobj.measure(cur) > avail_w and len(cur) > 1:
+                                    for k in range(len(cur) - 1, 0, -1):
+                                        if fobj.measure(cur[:k]) <= avail_w:
+                                            lines.append(cur[:k])
+                                            cur = cur[k:]
+                                            break
+                                    else:
+                                        break
+                        if cur:
+                            lines.append(cur)
+
+                        if len(lines) <= max_lines:
+                            best_lines = lines
+                            best_fs = try_fs
+                            break
+
+                    fnt = ("Segoe UI", best_fs)
+                    display_text = "\n".join(best_lines)
                     self.canvas.create_text(
-                        cx, cy,
-                        text=hint, font=("Segoe UI", fs),
-                        fill="white", width=bw - 4, anchor="center",
+                        x1 + bw / 2, y1 + bh / 2,
+                        text=display_text, font=fnt,
+                        fill="white", anchor="center",
                         justify="center"
                     )
-                    # Маска: скрываем текст, который вылез за блок
-                    if bh < cell * 3:
-                        self.canvas.create_rectangle(
-                            x1, by2, bx2, by2 + 1,
-                            fill=CELL_BORDER, outline=CELL_BORDER)
 
                     # Запоминаем стрелку для отрисовки поверх всего
                     if t_r is not None and t_c is not None:
@@ -1015,10 +1048,33 @@ class CrosswordApp:
 
         # Сканворд: рисуем стрелки ПОВЕРХ всех ячеек
         if ptype == "scanword" and deferred_arrows:
-            aw = max(3, int(cell * 0.15))
+            aw = max(3, int(cell * 0.12))
             lw = max(1, int(cell * 0.04))
             ac = GOLD_ACCENT
-            for (ax1, ay1, abw, abh, arrow, at_r, at_c) in deferred_arrows:
+
+            # Группируем стрелки по целевой ячейке для устранения наложений
+            from collections import defaultdict
+            _target_groups = defaultdict(list)
+            for _i, _a in enumerate(deferred_arrows):
+                _target_groups[(_a[5], _a[6])].append(_i)
+
+            # Вычисляем смещения: перпендикулярно направлению стрелки
+            _arrow_off = {}
+            for _key, _idxs in _target_groups.items():
+                _n = len(_idxs)
+                for _j, _idx in enumerate(_idxs):
+                    if _n <= 1:
+                        _arrow_off[_idx] = (0, 0)
+                    else:
+                        _arr = deferred_arrows[_idx][4]
+                        _pos = _j - (_n - 1) / 2
+                        _sp = cell * 0.15
+                        if _arr in ('right', 'right_down'):
+                            _arrow_off[_idx] = (0, _pos * _sp)
+                        else:
+                            _arrow_off[_idx] = (_pos * _sp, 0)
+
+            for _i, (ax1, ay1, abw, abh, arrow, at_r, at_c) in enumerate(deferred_arrows):
                 abx2 = ax1 + abw
                 aby2 = ay1 + abh
                 # Края целевой ячейки
@@ -1026,41 +1082,45 @@ class CrosswordApp:
                 t_top = oy + at_r * cell
                 t_cx = t_left + cell / 2
                 t_cy = t_top + cell / 2
+                # Смещение для избежания наложений
+                _ox, _oy = _arrow_off.get(_i, (0, 0))
+                t_cx += _ox
+                t_cy += _oy
 
                 if arrow == 'right':
+                    # → из правого края блока в целевую ячейку
                     sx = abx2
                     sy = ay1 + abh / 2
-                    self.canvas.create_line(sx, sy, t_left, t_cy, fill=ac, width=lw)
+                    self.canvas.create_line(sx, sy, t_cx - aw, t_cy, fill=ac, width=lw)
                     self.canvas.create_polygon(
-                        t_left, t_cy - aw, t_left + aw, t_cy, t_left, t_cy + aw, fill=ac)
+                        t_cx - aw, t_cy - aw, t_cx, t_cy, t_cx - aw, t_cy + aw, fill=ac)
                 elif arrow == 'down':
+                    # ↓ из нижнего края блока в целевую ячейку
                     sx = ax1 + abw / 2
                     sy = aby2
-                    self.canvas.create_line(sx, sy, t_cx, t_top, fill=ac, width=lw)
+                    self.canvas.create_line(sx, sy, t_cx, t_cy - aw, fill=ac, width=lw)
                     self.canvas.create_polygon(
-                        t_cx - aw, t_top, t_cx, t_top + aw, t_cx + aw, t_top, fill=ac)
+                        t_cx - aw, t_cy - aw, t_cx, t_cy, t_cx + aw, t_cy - aw, fill=ac)
                 elif arrow == 'down_right':
-                    # ↓ потом → : линия вниз, изгиб, линия вправо, ▶ на краю ячейки
-                    sx = ax1 + abw / 2
+                    # ↓→ : вниз из блока, изгиб ВНУТРИ целевой ячейки, вправо
+                    sx = abx2 - abw * 0.3
                     sy = aby2
-                    # Изгиб должен быть ЛЕВЕЕ t_left, чтобы последний отрезок шёл ВПРАВО
-                    bend_x = min(sx, t_left - aw * 2)
+                    bend_x = t_left + cell * 0.2
                     bend_y = t_cy
                     self.canvas.create_line(sx, sy, bend_x, bend_y, fill=ac, width=lw)
-                    self.canvas.create_line(bend_x, bend_y, t_left, t_cy, fill=ac, width=lw)
+                    self.canvas.create_line(bend_x, bend_y, t_cx - aw, t_cy, fill=ac, width=lw)
                     self.canvas.create_polygon(
-                        t_left, t_cy - aw, t_left + aw, t_cy, t_left, t_cy + aw, fill=ac)
+                        t_cx - aw, t_cy - aw, t_cx, t_cy, t_cx - aw, t_cy + aw, fill=ac)
                 elif arrow == 'right_down':
-                    # → потом ↓ : линия вправо, изгиб, линия вниз, ▼ на краю ячейки
+                    # →↓ : вправо из блока, изгиб ВНУТРИ целевой ячейки, вниз
                     sx = abx2
-                    sy = ay1 + abh / 2
-                    # Изгиб должен быть ВЫШЕ t_top, чтобы последний отрезок шёл ВНИЗ
+                    sy = aby2 - abh * 0.3
                     bend_x = t_cx
-                    bend_y = min(sy, t_top - aw * 2)
+                    bend_y = t_top + cell * 0.2
                     self.canvas.create_line(sx, sy, bend_x, bend_y, fill=ac, width=lw)
-                    self.canvas.create_line(bend_x, bend_y, t_cx, t_top, fill=ac, width=lw)
+                    self.canvas.create_line(bend_x, bend_y, t_cx, t_cy - aw, fill=ac, width=lw)
                     self.canvas.create_polygon(
-                        t_cx - aw, t_top, t_cx, t_top + aw, t_cx + aw, t_top, fill=ac)
+                        t_cx - aw, t_cy - aw, t_cx, t_cy, t_cx + aw, t_cy - aw, fill=ac)
 
         # Крисс-кросс: список слов справа
         if ptype == "crisscross":

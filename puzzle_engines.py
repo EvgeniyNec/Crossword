@@ -138,8 +138,8 @@ def _scanword_find_clue_cell(w, letter_cells, clue_occupied, new_rows, new_cols,
       - 'right_down' →↓ блок сверху-слева, стрелка ломаная вправо-вниз
     target_r, target_c — координаты первой буквы слова (куда указывает стрелка).
     """
-    # Всегда пытаемся 2×2, потом уменьшаем: 2×1, 1×2, 1×1
-    shapes = [(2, 2), (2, 1), (1, 2), (1, 1)]
+    # Только 2×2 блоки для подсказок
+    shapes = [(2, 2)]
     occupied_set = set(letter_cells) | set(clue_occupied.keys())
 
     def _can_span(start_r, start_c, span_r, span_c):
@@ -274,8 +274,8 @@ def generate_scanword(questions: list[Question], title: str = "Сканворд"
     if not cw.words:
         return cw
 
-    # --- Шаг 1: Расширяем сетку на 3 клетки в каждую сторону ---
-    pad = 3
+    # --- Шаг 1: Расширяем сетку на 4 клетки в каждую сторону (для 2×2 блоков) ---
+    pad = 4
     old_grid = cw.grid
     new_rows = cw.rows + pad * 2
     new_cols = cw.cols + pad * 2

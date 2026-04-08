@@ -178,32 +178,55 @@ def _draw_grid_page(c: canvas.Canvas, cw: Crossword, show_answers: bool,
                 c.setFillColor(HexColor("#3d5a80"))
                 c.rect(x, by, bw, bh, fill=1, stroke=1)
 
-                # Мелкий шрифт
-                area_factor = max(1, sr * sc)
-                fs = max(2.5, min(5, cell / mm * 0.18 * (area_factor ** 0.3)))
+                # Авто-масштабирование: уменьшаем шрифт пока ВЕСЬ текст влезет
                 c.setFillColor(white)
-                c.setFont(FONT_NAME, fs)
+                pdf_pad = 1 * mm
+                avail_w_pdf = bw - pdf_pad * 2
+                avail_h_pdf = bh - pdf_pad * 2
+                best_lines = [hint]
+                best_fs = 2.0
 
-                # Перенос текста по строкам
-                max_chars_per_line = max(5, int(bw / (fs * 0.6 * mm)))
-                words = hint.split()
-                lines = []
-                current = ""
-                for word in words:
-                    test = (current + " " + word).strip()
-                    if len(test) <= max_chars_per_line:
-                        current = test
-                    else:
-                        if current:
-                            lines.append(current)
-                        current = word
-                if current:
-                    lines.append(current)
+                for try_fs_10 in range(max(20, int(cell / mm * 3.0)), 19, -1):
+                    try_fs = try_fs_10 / 10.0
+                    line_h = try_fs * 1.2
+                    max_lines = max(1, int(avail_h_pdf / (line_h * mm)))
+                    # Реальная ширина через stringWidth
+                    from reportlab.pdfbase.pdfmetrics import stringWidth as _sw
 
-                total_text_h = len(lines) * (fs + 1)
-                text_start_y = by + bh / 2 + total_text_h / 2 - fs + 1
-                for i, line in enumerate(lines):
-                    c.drawCentredString(x + bw / 2, text_start_y - i * (fs + 1), line)
+                    words = hint.split()
+                    lines = []
+                    current = ""
+                    for word in words:
+                        test = (current + " " + word).strip() if current else word
+                        if _sw(test, FONT_NAME, try_fs) <= avail_w_pdf:
+                            current = test
+                        else:
+                            if current:
+                                lines.append(current)
+                            current = word
+                            # Разрыв длинного слова
+                            while _sw(current, FONT_NAME, try_fs) > avail_w_pdf and len(current) > 1:
+                                for k in range(len(current) - 1, 0, -1):
+                                    if _sw(current[:k], FONT_NAME, try_fs) <= avail_w_pdf:
+                                        lines.append(current[:k])
+                                        current = current[k:]
+                                        break
+                                else:
+                                    break
+                    if current:
+                        lines.append(current)
+
+                    if len(lines) <= max_lines:
+                        best_lines = lines
+                        best_fs = try_fs
+                        break
+
+                c.setFont(FONT_NAME, best_fs)
+                line_h_pt = best_fs * 1.2
+                total_text_h = len(best_lines) * line_h_pt
+                text_start_y = by + bh / 2 + total_text_h / 2 - best_fs
+                for i, line in enumerate(best_lines):
+                    c.drawCentredString(x + bw / 2, text_start_y - i * line_h_pt, line)
 
                 # Запоминаем стрелку для отрисовки поверх всех ячеек
                 if t_r is not None and t_c is not None:
@@ -289,55 +312,75 @@ def _draw_grid_page(c: canvas.Canvas, cw: Crossword, show_answers: bool,
         c.setStrokeColor(ac)
         c.setFillColor(ac)
         c.setLineWidth(0.5)
-        aw = cell / mm * 0.15
+        aw = cell / mm * 0.10
 
-        for (bx, by, bw, bh, arrow, at_r, at_c) in deferred_arrows:
-            # Края целевой ячейки (PDF: Y растёт вверх)
+        # Группируем стрелки по целевой ячейке для устранения наложений
+        from collections import defaultdict
+        _tg = defaultdict(list)
+        for _i, _a in enumerate(deferred_arrows):
+            _tg[(_a[5], _a[6])].append(_i)
+        _aoff = {}
+        for _, _idxs in _tg.items():
+            _n = len(_idxs)
+            for _j, _idx in enumerate(_idxs):
+                if _n <= 1:
+                    _aoff[_idx] = (0, 0)
+                else:
+                    _arr = deferred_arrows[_idx][4]
+                    _pos = _j - (_n - 1) / 2
+                    _sp = cell * 0.15
+                    if _arr in ('right', 'right_down'):
+                        _aoff[_idx] = (0, _pos * _sp)
+                    else:
+                        _aoff[_idx] = (_pos * _sp, 0)
+
+        for _i, (bx, by, bw, bh, arrow, at_r, at_c) in enumerate(deferred_arrows):
+            # Центр целевой ячейки (PDF: Y растёт вверх)
             t_left = start_x + at_c * cell
             t_top = start_y - at_r * cell          # верхний край
             t_bottom = start_y - (at_r + 1) * cell # нижний край
             t_cx = t_left + cell / 2
             t_cy = (t_top + t_bottom) / 2
+            # Смещение для избежания наложений
+            _ox, _oy = _aoff.get(_i, (0, 0))
+            t_cx += _ox
+            t_cy += _oy
 
             if arrow == 'right':
-                # ──▶ остриё на левом краю ячейки
                 sx = bx + bw
                 sy = by + bh / 2
-                c.line(sx, sy, t_left, t_cy)
+                c.line(sx, sy, t_cx - aw, t_cy)
                 p = c.beginPath()
-                p.moveTo(t_left, t_cy - aw); p.lineTo(t_left + aw, t_cy); p.lineTo(t_left, t_cy + aw); p.close()
+                p.moveTo(t_cx - aw, t_cy - aw); p.lineTo(t_cx, t_cy); p.lineTo(t_cx - aw, t_cy + aw); p.close()
                 c.drawPath(p, fill=1, stroke=0)
             elif arrow == 'down':
-                # │▼ остриё на верхнем краю ячейки (PDF: верх = больше Y)
                 sx = bx + bw / 2
                 sy = by
-                c.line(sx, sy, t_cx, t_top)
+                c.line(sx, sy, t_cx, t_cy + aw)
                 p = c.beginPath()
-                p.moveTo(t_cx - aw, t_top); p.lineTo(t_cx, t_top - aw); p.lineTo(t_cx + aw, t_top); p.close()
+                p.moveTo(t_cx - aw, t_cy + aw); p.lineTo(t_cx, t_cy); p.lineTo(t_cx + aw, t_cy + aw); p.close()
                 c.drawPath(p, fill=1, stroke=0)
             elif arrow == 'down_right':
-                # ↓→▶ вниз, потом вправо, остриё ▶ на левом краю
-                sx = bx + bw / 2
+                # ↓→ : изгиб ВНУТРИ целевой ячейки
+                sx = bx + bw - bw * 0.3
                 sy = by
-                # Изгиб ЛЕВЕЕ t_left, чтобы последний отрезок шёл ВПРАВО
-                bend_x = min(sx, t_left - aw * 2)
+                bend_x = t_left + cell * 0.2
                 bend_y = t_cy
                 c.line(sx, sy, bend_x, bend_y)
-                c.line(bend_x, bend_y, t_left, t_cy)
+                c.line(bend_x, bend_y, t_cx - aw, t_cy)
                 p = c.beginPath()
-                p.moveTo(t_left, t_cy - aw); p.lineTo(t_left + aw, t_cy); p.lineTo(t_left, t_cy + aw); p.close()
+                p.moveTo(t_cx - aw, t_cy - aw); p.lineTo(t_cx, t_cy); p.lineTo(t_cx - aw, t_cy + aw); p.close()
                 c.drawPath(p, fill=1, stroke=0)
             elif arrow == 'right_down':
-                # →↓▼ вправо, потом вниз, остриё ▼ на верхнем краю
+                # →↓ : изгиб ВНУТРИ целевой ячейки
                 sx = bx + bw
-                sy = by + bh / 2
+                sy = by + bh * 0.3
                 bend_x = t_cx
-                # Изгиб ВЫШЕ t_top (в PDF: Y вверх = больше), чтобы последний отрезок шёл ВНИЗ
-                bend_y = max(sy, t_top + aw * 2)
+                bend_y = t_top - cell * 0.2
                 c.line(sx, sy, bend_x, bend_y)
-                c.line(bend_x, bend_y, t_cx, t_top)
+                c.line(bend_x, bend_y, t_cx, t_cy + aw)
                 p = c.beginPath()
-                p.moveTo(t_cx - aw, t_top); p.lineTo(t_cx, t_top - aw); p.lineTo(t_cx + aw, t_top); p.close()
+                p.moveTo(t_cx - aw, t_cy + aw); p.lineTo(t_cx, t_cy); p.lineTo(t_cx + aw, t_cy + aw); p.close()
                 c.drawPath(p, fill=1, stroke=0)
 
     # Крисс-кросс: список слов под сеткой

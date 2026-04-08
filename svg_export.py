@@ -19,58 +19,50 @@ COLOR_TITLE = "#333333"
 COLOR_CATEGORY = "#1a73e8"
 
 
-def _svg_scanword_arrow(x, y, bw, bh, arrow, tx, ty, cell_sz=40):
-    """Генерирует SVG-разметку стрелки от края блока подсказки к целевой ячейке.
-    
+def _svg_scanword_arrow(x, y, bw, bh, arrow, tx, ty, cell_sz=40, off_x=0, off_y=0):
+    """Генерирует SVG стрелку от края блока подсказки к целевой ячейке.
+
     tx, ty — левый верхний угол целевой ячейки.
-    cell_sz — размер ячейки для вычисления центра и наконечника.
+    off_x, off_y — смещение наконечника для избежания наложений.
+    Изгиб ломаных стрелок — ВНУТРИ целевой ячейки.
     """
     ac = "#f2cc8f"
-    aw = cell_sz * 0.15   # размер наконечника
+    aw = cell_sz * 0.08
     sw = max(1, cell_sz * 0.04)
-    # Края целевой ячейки
-    t_left = tx
-    t_top = ty
-    t_cx = tx + cell_sz / 2
-    t_cy = ty + cell_sz / 2
+    t_cx = tx + cell_sz / 2 + off_x
+    t_cy = ty + cell_sz / 2 + off_y
 
     if arrow == 'right':
-        # ──▶  остриё на левом краю ячейки
         sx = x + bw
         sy = y + bh / 2
-        return (f'  <line x1="{sx}" y1="{sy}" x2="{t_left}" y2="{t_cy}" '
+        return (f'  <line x1="{sx}" y1="{sy}" x2="{t_cx - aw}" y2="{t_cy}" '
                 f'stroke="{ac}" stroke-width="{sw}"/>\n'
-                f'  <polygon points="{t_left},{t_cy - aw} {t_left + aw},{t_cy} {t_left},{t_cy + aw}" '
+                f'  <polygon points="{t_cx - aw},{t_cy - aw} {t_cx},{t_cy} {t_cx - aw},{t_cy + aw}" '
                 f'fill="{ac}"/>\n')
     elif arrow == 'down':
-        # │▼  остриё на верхнем краю ячейки
         sx = x + bw / 2
         sy = y + bh
-        return (f'  <line x1="{sx}" y1="{sy}" x2="{t_cx}" y2="{t_top}" '
+        return (f'  <line x1="{sx}" y1="{sy}" x2="{t_cx}" y2="{t_cy - aw}" '
                 f'stroke="{ac}" stroke-width="{sw}"/>\n'
-                f'  <polygon points="{t_cx - aw},{t_top} {t_cx},{t_top + aw} {t_cx + aw},{t_top}" '
+                f'  <polygon points="{t_cx - aw},{t_cy - aw} {t_cx},{t_cy} {t_cx + aw},{t_cy - aw}" '
                 f'fill="{ac}"/>\n')
     elif arrow == 'down_right':
-        # ↓→▶  вниз, потом вправо, остриё на левом краю
-        sx = x + bw / 2
+        sx = x + bw - bw * 0.3
         sy = y + bh
-        # Изгиб ЛЕВЕЕ t_left, чтобы последний отрезок шёл ВПРАВО
-        bend_x = min(sx, t_left - aw * 2)
+        bend_x = tx + cell_sz * 0.2
         bend_y = t_cy
-        return (f'  <polyline points="{sx},{sy} {bend_x},{bend_y} {t_left},{t_cy}" '
+        return (f'  <polyline points="{sx},{sy} {bend_x},{bend_y} {t_cx - aw},{t_cy}" '
                 f'stroke="{ac}" stroke-width="{sw}" fill="none"/>\n'
-                f'  <polygon points="{t_left},{t_cy - aw} {t_left + aw},{t_cy} {t_left},{t_cy + aw}" '
+                f'  <polygon points="{t_cx - aw},{t_cy - aw} {t_cx},{t_cy} {t_cx - aw},{t_cy + aw}" '
                 f'fill="{ac}"/>\n')
     elif arrow == 'right_down':
-        # →↓▼  вправо, потом вниз, остриё на верхнем краю
         sx = x + bw
-        sy = y + bh / 2
+        sy = y + bh - bh * 0.3
         bend_x = t_cx
-        # Изгиб ВЫШЕ t_top, чтобы последний отрезок шёл ВНИЗ
-        bend_y = min(sy, t_top - aw * 2)
-        return (f'  <polyline points="{sx},{sy} {bend_x},{bend_y} {t_cx},{t_top}" '
+        bend_y = ty + cell_sz * 0.2
+        return (f'  <polyline points="{sx},{sy} {bend_x},{bend_y} {t_cx},{t_cy - aw}" '
                 f'stroke="{ac}" stroke-width="{sw}" fill="none"/>\n'
-                f'  <polygon points="{t_cx - aw},{t_top} {t_cx},{t_top + aw} {t_cx + aw},{t_top}" '
+                f'  <polygon points="{t_cx - aw},{t_cy - aw} {t_cx},{t_cy} {t_cx + aw},{t_cy - aw}" '
                 f'fill="{ac}"/>\n')
     return ''
 
@@ -144,6 +136,9 @@ def export_svg(crossword: Crossword, filepath: str, show_answers: bool = False,
     ox = MARGIN
     oy = MARGIN + title_height
 
+    # Отложенные стрелки сканворда
+    _svg_arrows = []
+
     # Рисуем ячейки
     for row in range(cw.rows):
         for col in range(cw.cols):
@@ -165,20 +160,43 @@ def export_svg(crossword: Crossword, filepath: str, show_answers: bool = False,
                     f'fill="#3d5a80" stroke="{COLOR_CELL_BORDER}" stroke-width="1"/>\n'
                 )
                 disp = html.escape(hint_text)
-                fs = max(4, CELL_SIZE * 0.14)
+                # Авто-масштаб: оценка размера шрифта чтобы текст влез полностью
+                pad_svg = 3
+                aw_svg = bw - pad_svg * 2
+                ah_svg = bh - pad_svg * 2
+                # Оцениваем: средняя ширина символа ~0.55 * fs, высота строки ~1.3 * fs
+                # Подбираем fs от большого к малому
+                best_svg_fs = 3
+                for tfs in range(max(3, int(CELL_SIZE * 0.30)), 2, -1):
+                    chars_per_line = max(1, int(aw_svg / (tfs * 0.55)))
+                    # Простая оценка количества строк
+                    words_sv = hint_text.split()
+                    nlines = 1
+                    cur_len = 0
+                    for ww in words_sv:
+                        if cur_len == 0:
+                            cur_len = len(ww)
+                        elif cur_len + 1 + len(ww) <= chars_per_line:
+                            cur_len += 1 + len(ww)
+                        else:
+                            nlines += 1
+                            cur_len = len(ww)
+                    max_lines_svg = max(1, int(ah_svg / (tfs * 1.3)))
+                    if nlines <= max_lines_svg:
+                        best_svg_fs = tfs
+                        break
                 parts.append(
-                    f'  <foreignObject x="{x + 1}" y="{y + 1}" width="{bw - 2}" height="{bh - 8}">'
+                    f'  <foreignObject x="{x + pad_svg}" y="{y + pad_svg}" '
+                    f'width="{aw_svg}" height="{ah_svg}">'
                     f'<div xmlns="http://www.w3.org/1999/xhtml" style="'
-                    f'font-family:{FONT_FAMILY};font-size:{fs:.1f}px;color:white;'
+                    f'font-family:{FONT_FAMILY};font-size:{best_svg_fs}px;color:white;'
                     f'text-align:center;overflow:hidden;word-wrap:break-word;'
                     f'display:flex;align-items:center;justify-content:center;height:100%">'
                     f'{disp}</div></foreignObject>\n'
                 )
-                # Стрелка от блока к целевой ячейке
+                # Стрелка от блока к целевой ячейке (отложенная)
                 if t_r is not None and t_c is not None:
-                    target_x = ox + t_c * CELL_SIZE
-                    target_y = oy + t_r * CELL_SIZE
-                    parts.append(_svg_scanword_arrow(x, y, bw, bh, arrow, target_x, target_y, CELL_SIZE))
+                    _svg_arrows.append((x, y, bw, bh, arrow, t_r, t_c))
                 continue
 
             # Тёмные блоки (сканворд)
@@ -220,6 +238,33 @@ def export_svg(crossword: Crossword, filepath: str, show_answers: bool = False,
                         f'font-size="{letter_fs:.1f}" font-weight="bold" fill="{COLOR_LETTER}">'
                         f'{esc_ch}</text>\n'
                     )
+
+    # Сканворд: рисуем стрелки с учётом наложений
+    if cw.puzzle_type == "scanword" and _svg_arrows:
+        from collections import defaultdict
+        _tg = defaultdict(list)
+        for _i, _a in enumerate(_svg_arrows):
+            _tg[(_a[5], _a[6])].append(_i)
+        _aoff = {}
+        for _, _idxs in _tg.items():
+            _n = len(_idxs)
+            for _j, _idx in enumerate(_idxs):
+                if _n <= 1:
+                    _aoff[_idx] = (0, 0)
+                else:
+                    _arr = _svg_arrows[_idx][4]
+                    _pos = _j - (_n - 1) / 2
+                    _sp = CELL_SIZE * 0.15
+                    if _arr in ('right', 'right_down'):
+                        _aoff[_idx] = (0, _pos * _sp)
+                    else:
+                        _aoff[_idx] = (_pos * _sp, 0)
+        for _i, (ax, ay, abw, abh, arrow, at_r, at_c) in enumerate(_svg_arrows):
+            target_x = ox + at_c * CELL_SIZE
+            target_y = oy + at_r * CELL_SIZE
+            _ox2, _oy2 = _aoff.get(_i, (0, 0))
+            parts.append(_svg_scanword_arrow(ax, ay, abw, abh, arrow,
+                                              target_x, target_y, CELL_SIZE, _ox2, _oy2))
 
     parts.append('</svg>\n')
 
@@ -298,6 +343,9 @@ def export_svg_with_clues(crossword: Crossword, filepath: str, show_answers: boo
     ox = (svg_w - grid_w) / 2
     oy = MARGIN + title_height
 
+    # Отложенные стрелки сканворда
+    _svg_arrows2 = []
+
     # Сетка
     for row in range(cw.rows):
         for col in range(cw.cols):
@@ -319,18 +367,37 @@ def export_svg_with_clues(crossword: Crossword, filepath: str, show_answers: boo
                     f'fill="#3d5a80" stroke="{COLOR_CELL_BORDER}" stroke-width="1"/>\n'
                 )
                 fs = max(4, CELL_SIZE * 0.14)
+                pad2 = 3
+                aw2 = bw - pad2 * 2
+                ah2 = bh - pad2 * 2
+                best_fs2 = 3
+                for tfs2 in range(max(3, int(CELL_SIZE * 0.30)), 2, -1):
+                    cpl2 = max(1, int(aw2 / (tfs2 * 0.55)))
+                    ws2 = hint_text.split()
+                    nl2 = 1
+                    cl2 = 0
+                    for ww2 in ws2:
+                        if cl2 == 0:
+                            cl2 = len(ww2)
+                        elif cl2 + 1 + len(ww2) <= cpl2:
+                            cl2 += 1 + len(ww2)
+                        else:
+                            nl2 += 1
+                            cl2 = len(ww2)
+                    ml2 = max(1, int(ah2 / (tfs2 * 1.3)))
+                    if nl2 <= ml2:
+                        best_fs2 = tfs2
+                        break
                 parts.append(
-                    f'  <foreignObject x="{x + 1}" y="{y + 1}" width="{bw - 2}" height="{bh - 8}">'
+                    f'  <foreignObject x="{x + pad2}" y="{y + pad2}" width="{aw2}" height="{ah2}">'
                     f'<div xmlns="http://www.w3.org/1999/xhtml" style="'
-                    f'font-family:{FONT_FAMILY};font-size:{fs:.1f}px;color:white;'
+                    f'font-family:{FONT_FAMILY};font-size:{best_fs2}px;color:white;'
                     f'text-align:center;overflow:hidden;word-wrap:break-word;'
                     f'display:flex;align-items:center;justify-content:center;height:100%">'
                     f'{disp}</div></foreignObject>\n'
                 )
                 if t_r is not None and t_c is not None:
-                    target_x = ox + t_c * CELL_SIZE
-                    target_y = oy + t_r * CELL_SIZE
-                    parts.append(_svg_scanword_arrow(x, y, bw, bh, arrow, target_x, target_y, CELL_SIZE))
+                    _svg_arrows2.append((x, y, bw, bh, arrow, t_r, t_c))
                 continue
 
             # Тёмные блоки (сканворд)
@@ -417,6 +484,33 @@ def export_svg_with_clues(crossword: Crossword, filepath: str, show_answers: boo
                 f'{hint_text}</text>\n'
             )
             clue_y += clue_line_h
+
+    # Сканворд: рисуем стрелки с учётом наложений
+    if cw.puzzle_type == "scanword" and _svg_arrows2:
+        from collections import defaultdict
+        _tg2 = defaultdict(list)
+        for _i, _a in enumerate(_svg_arrows2):
+            _tg2[(_a[5], _a[6])].append(_i)
+        _aoff2 = {}
+        for _, _idxs in _tg2.items():
+            _n = len(_idxs)
+            for _j, _idx in enumerate(_idxs):
+                if _n <= 1:
+                    _aoff2[_idx] = (0, 0)
+                else:
+                    _arr = _svg_arrows2[_idx][4]
+                    _pos = _j - (_n - 1) / 2
+                    _sp = CELL_SIZE * 0.15
+                    if _arr in ('right', 'right_down'):
+                        _aoff2[_idx] = (0, _pos * _sp)
+                    else:
+                        _aoff2[_idx] = (_pos * _sp, 0)
+        for _i, (ax, ay, abw, abh, arrow, at_r, at_c) in enumerate(_svg_arrows2):
+            target_x = ox + at_c * CELL_SIZE
+            target_y = oy + at_r * CELL_SIZE
+            _ox3, _oy3 = _aoff2.get(_i, (0, 0))
+            parts.append(_svg_scanword_arrow(ax, ay, abw, abh, arrow,
+                                              target_x, target_y, CELL_SIZE, _ox3, _oy3))
 
     parts.append('</svg>\n')
 

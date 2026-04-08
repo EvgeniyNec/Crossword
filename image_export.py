@@ -172,35 +172,60 @@ def _render_grid(cw: Crossword, show_answers: bool, transparent: bool,
                     fill=(61, 90, 128, 255), outline=(51, 51, 51, 255), width=max(1, S),
                 )
 
-                # Выбираем шрифт по размеру блока
-                use_font = font_clue if sr * sc > 1 else font_clue_small
+                # Авто-масштабирование: уменьшаем шрифт пока ВЕСЬ текст влезет
+                pad_img = 4 * S
+                avail_w = bw - pad_img * 2
+                avail_h = bh - pad_img * 2
+                best_lines = [hint]
+                best_font = _get_font(3)
 
-                # Перенос текста по строкам
-                words_list = hint.split()
-                max_text_w = bw - 6 * S
-                lines = []
-                current = ""
-                for word in words_list:
-                    test = (current + " " + word).strip()
-                    tbbox = draw.textbbox((0, 0), test, font=use_font)
-                    if tbbox[2] - tbbox[0] <= max_text_w:
-                        current = test
-                    else:
-                        if current:
-                            lines.append(current)
-                        current = word
-                if current:
-                    lines.append(current)
+                for try_fs in range(max(3, int(CELL_SIZE * 0.30)), 2, -1):
+                    try_font = _get_font(try_fs)
+                    line_h = try_fs + 2 * S
+                    max_lines = max(1, int(avail_h / line_h))
 
-                line_h = use_font.size + 2
-                total_h = len(lines) * line_h
-                start_y = y + (bh - total_h) / 2 - 2 * S
-                for i, line in enumerate(lines):
-                    lbbox = draw.textbbox((0, 0), line, font=use_font)
+                    words_list = hint.split()
+                    lines = []
+                    current = ""
+                    for word in words_list:
+                        test = (current + " " + word).strip() if current else word
+                        tbbox = draw.textbbox((0, 0), test, font=try_font)
+                        if tbbox[2] - tbbox[0] <= avail_w:
+                            current = test
+                        else:
+                            if current:
+                                lines.append(current)
+                            current = word
+                            # Разрыв длинного слова
+                            while True:
+                                wb = draw.textbbox((0, 0), current, font=try_font)
+                                if wb[2] - wb[0] <= avail_w or len(current) <= 1:
+                                    break
+                                for k in range(len(current) - 1, 0, -1):
+                                    tb = draw.textbbox((0, 0), current[:k], font=try_font)
+                                    if tb[2] - tb[0] <= avail_w:
+                                        lines.append(current[:k])
+                                        current = current[k:]
+                                        break
+                                else:
+                                    break
+                    if current:
+                        lines.append(current)
+
+                    if len(lines) <= max_lines:
+                        best_lines = lines
+                        best_font = try_font
+                        break
+
+                line_h = best_font.size + 2 * S
+                total_h = len(best_lines) * line_h
+                text_y = y + (bh - total_h) / 2
+                for i, line in enumerate(best_lines):
+                    lbbox = draw.textbbox((0, 0), line, font=best_font)
                     lw = lbbox[2] - lbbox[0]
                     draw.text(
-                        (x + (bw - lw) / 2, start_y + i * line_h),
-                        line, fill=(255, 255, 255, 255), font=use_font
+                        (x + (bw - lw) / 2, text_y + i * line_h),
+                        line, fill=(255, 255, 255, 255), font=best_font
                     )
 
                 # Запоминаем стрелку для отрисовки поверх всех ячеек
@@ -253,41 +278,67 @@ def _render_grid(cw: Crossword, show_answers: bool, transparent: bool,
     if cw.puzzle_type == "scanword" and deferred_arrows:
         ac = (242, 204, 143, 255)
         lw_line = max(1, int(CELL_SIZE * 0.03))
-        asz = int(CELL_SIZE * 0.15)
+        asz = int(CELL_SIZE * 0.10)
 
-        for (bx, by, bw, bh, arrow, at_r, at_c) in deferred_arrows:
-            # Края целевой ячейки
+        # Группируем стрелки по целевой ячейке для устранения наложений
+        from collections import defaultdict
+        _tg = defaultdict(list)
+        for _i, _a in enumerate(deferred_arrows):
+            _tg[(_a[5], _a[6])].append(_i)
+        _aoff = {}
+        for _, _idxs in _tg.items():
+            _n = len(_idxs)
+            for _j, _idx in enumerate(_idxs):
+                if _n <= 1:
+                    _aoff[_idx] = (0, 0)
+                else:
+                    _arr = deferred_arrows[_idx][4]
+                    _pos = _j - (_n - 1) / 2
+                    _sp = CELL_SIZE * 0.15
+                    if _arr in ('right', 'right_down'):
+                        _aoff[_idx] = (0, _pos * _sp)
+                    else:
+                        _aoff[_idx] = (_pos * _sp, 0)
+
+        for _i, (bx, by, bw, bh, arrow, at_r, at_c) in enumerate(deferred_arrows):
+            # Центр целевой ячейки
             t_left = int(ox + at_c * CELL_SIZE)
             t_top = int(oy + at_r * CELL_SIZE)
             t_cx = int(t_left + CELL_SIZE / 2)
             t_cy = int(t_top + CELL_SIZE / 2)
+            # Смещение для избежания наложений
+            _ox, _oy = _aoff.get(_i, (0, 0))
+            t_cx += int(_ox)
+            t_cy += int(_oy)
 
             if arrow == 'right':
                 sx_a = int(bx + bw)
                 sy_a = int(by + bh / 2)
-                draw.line([(sx_a, sy_a), (t_left, t_cy)], fill=ac, width=lw_line)
-                draw.polygon([(t_left, t_cy - asz), (t_left + asz, t_cy), (t_left, t_cy + asz)], fill=ac)
+                draw.line([(sx_a, sy_a), (t_cx - asz, t_cy)], fill=ac, width=lw_line)
+                draw.polygon([(t_cx - asz, t_cy - asz), (t_cx, t_cy), (t_cx - asz, t_cy + asz)], fill=ac)
             elif arrow == 'down':
                 sx_a = int(bx + bw / 2)
                 sy_a = int(by + bh)
-                draw.line([(sx_a, sy_a), (t_cx, t_top)], fill=ac, width=lw_line)
-                draw.polygon([(t_cx - asz, t_top), (t_cx, t_top + asz), (t_cx + asz, t_top)], fill=ac)
+                draw.line([(sx_a, sy_a), (t_cx, t_cy - asz)], fill=ac, width=lw_line)
+                draw.polygon([(t_cx - asz, t_cy - asz), (t_cx, t_cy), (t_cx + asz, t_cy - asz)], fill=ac)
             elif arrow == 'down_right':
-                sx_a = int(bx + bw / 2)
+                # ↓→ : изгиб ВНУТРИ целевой ячейки
+                sx_a = int(bx + bw - bw * 0.3)
                 sy_a = int(by + bh)
-                bend_x = min(sx_a, t_left - asz * 2)
+                bend_x = int(t_left + CELL_SIZE * 0.2)
                 bend_y = t_cy
                 draw.line([(sx_a, sy_a), (bend_x, bend_y)], fill=ac, width=lw_line)
-                draw.line([(bend_x, bend_y), (t_left, t_cy)], fill=ac, width=lw_line)
-                draw.polygon([(t_left, t_cy - asz), (t_left + asz, t_cy), (t_left, t_cy + asz)], fill=ac)
+                draw.line([(bend_x, bend_y), (t_cx - asz, t_cy)], fill=ac, width=lw_line)
+                draw.polygon([(t_cx - asz, t_cy - asz), (t_cx, t_cy), (t_cx - asz, t_cy + asz)], fill=ac)
             elif arrow == 'right_down':
+                # →↓ : изгиб ВНУТРИ целевой ячейки
                 sx_a = int(bx + bw)
-                sy_a = int(by + bh / 2)
+                sy_a = int(by + bh * 0.3)
                 bend_x = t_cx
-                bend_y = min(sy_a, t_top - asz * 2)
+                bend_y = int(t_top + CELL_SIZE * 0.2)
                 draw.line([(sx_a, sy_a), (bend_x, bend_y)], fill=ac, width=lw_line)
-                draw.line([(bend_x, bend_y), (t_cx, t_top)], fill=ac, width=lw_line)
-                draw.polygon([(t_cx - asz, t_top), (t_cx, t_top + asz), (t_cx + asz, t_top)], fill=ac)
+                draw.line([(bend_x, bend_y), (t_cx, t_cy - asz)], fill=ac, width=lw_line)
+                draw.polygon([(t_cx - asz, t_cy - asz), (t_cx, t_cy), (t_cx + asz, t_cy - asz)], fill=ac)
 
     return img
 
