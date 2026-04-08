@@ -43,10 +43,13 @@ jobs:
           name: Crossword-Windows
           path: dist/Crossword.exe
 
+      - name: Package Mac app
+        if: runner.os == 'macOS'
+        run: cd dist && zip -r Crossword-Mac.zip Crossword.app
+
       - name: Upload Mac artifact
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: Crossword-Mac
-          path: dist/Crossword.app
-          if-no-files-found: warn
+          path: dist/Crossword-Mac.zip
