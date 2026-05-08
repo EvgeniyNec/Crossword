@@ -1,6 +1,6 @@
 """Точка входа — Генератор кроссвордов для воскресной школы."""
 
-VERSION = "1.3.2"
+VERSION = "1.3.3"
 
 import tkinter as tk
 from app import CrosswordApp

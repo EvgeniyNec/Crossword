@@ -12,7 +12,7 @@ from puzzle_engines import (generate_filword, generate_crisscross,
                             generate_japanese)
 from data_manager import save_questions, load_questions
 from pdf_export import export_pdf, export_pdf_questions_answers
-from docx_export import export_docx
+from docx_export import export_docx, export_docx_questions_answers
 from svg_export import export_svg, export_svg_with_clues
 from image_export import export_png, export_jpg
 from text_parser import parse_questions_text
@@ -287,6 +287,8 @@ class CrosswordApp:
                    command=lambda: self._export_docx(False)).pack(side=tk.LEFT, padx=2)
         ttk.Button(export_bar, text="Word (ответы)", style="Green.TButton",
                    command=lambda: self._export_docx(True)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(export_bar, text="Word (вопросы)", style="Green.TButton",
+               command=self._export_docx_questions_answers).pack(side=tk.LEFT, padx=2)
         ttk.Separator(export_bar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=4)
         ttk.Button(export_bar, text="SVG (сетка)", style="Accent.TButton",
                    command=lambda: self._export_svg(False)).pack(side=tk.LEFT, padx=2)
@@ -1435,6 +1437,27 @@ class CrosswordApp:
             messagebox.showinfo("Готово", f"PDF с вопросами и ответами сохранён:\n{path}")
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось создать PDF:\n{e}")
+
+    def _export_docx_questions_answers(self) -> None:
+        """Экспортирует в Word только вопросы и ответы."""
+        if not self.crossword or not self.crossword.words:
+            messagebox.showinfo("Информация", "Сначала сгенерируйте кроссворд.")
+            return
+
+        path = filedialog.asksaveasfilename(
+            title="Сохранить Word (вопросы и ответы)",
+            defaultextension=".docx",
+            initialfile="crossword_questions_answers.docx",
+            filetypes=[("Word", "*.docx")],
+        )
+        if not path:
+            return
+
+        try:
+            export_docx_questions_answers(self.crossword, path)
+            messagebox.showinfo("Готово", f"Word с вопросами и ответами сохранён:\n{path}")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось создать DOCX:\n{e}")
 
     def _export_svg(self, full: bool) -> None:
         """Экспортирует кроссворд в SVG (векторный формат для CorelDRAW/Illustrator)."""

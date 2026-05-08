@@ -25,8 +25,22 @@ def export_docx(crossword: Crossword, filepath: str, show_answers: bool = False,
 
     _add_crossword_page(doc, crossword, show_answers, cell_size_px)
     doc.add_page_break()
-    _add_clues_page(doc, crossword)
+    _add_clues_page(doc, crossword, show_answers)
 
+    doc.save(filepath)
+
+
+def export_docx_questions_answers(crossword: Crossword, filepath: str) -> None:
+    """Экспортирует в DOCX только вопросы и ответы."""
+    doc = Document()
+
+    section = doc.sections[0]
+    section.top_margin = Cm(1.5)
+    section.bottom_margin = Cm(1.5)
+    section.left_margin = Cm(1.5)
+    section.right_margin = Cm(1.5)
+
+    _add_questions_answers_page(doc, crossword)
     doc.save(filepath)
 
 
@@ -167,7 +181,7 @@ def _add_crossword_page(doc: Document, cw: Crossword, show_answers: bool,
                 _set_cell_border(cell, "E0E0E0")
 
 
-def _add_clues_page(doc: Document, cw: Crossword) -> None:
+def _add_clues_page(doc: Document, cw: Crossword, show_answers: bool) -> None:
     """Добавляет страницу с вопросами."""
     h = doc.add_heading("Вопросы к кроссворду", level=1)
     h.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -178,15 +192,68 @@ def _add_clues_page(doc: Document, cw: Crossword) -> None:
     down = sorted([w for w in cw.words if w.direction == 'down'], key=lambda w: w.number)
 
     if across:
-        _add_clue_section(doc, "По горизонтали →", across)
+        _add_clue_section(doc, "По горизонтали →", across, show_answers)
 
     doc.add_paragraph()
 
     if down:
-        _add_clue_section(doc, "По вертикали ↓", down)
+        _add_clue_section(doc, "По вертикали ↓", down, show_answers)
 
 
-def _add_clue_section(doc: Document, title: str, words: list) -> None:
+def _add_questions_answers_page(doc: Document, cw: Crossword) -> None:
+    """Добавляет страницу только с вопросами и ответами."""
+    h = doc.add_heading("Вопросы и ответы", level=1)
+    h.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for run in h.runs:
+        run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+
+    if cw.puzzle_type == "filword":
+        words = sorted(cw.words, key=lambda w: w.question.answer)
+        _add_simple_question_answer_list(doc, words)
+        return
+
+    across = sorted([w for w in cw.words if w.direction == 'across'], key=lambda w: w.number)
+    down = sorted([w for w in cw.words if w.direction == 'down'], key=lambda w: w.number)
+
+    if across:
+        _add_clue_section(doc, "По горизонтали →", across, True)
+
+    if across and down:
+        doc.add_paragraph()
+
+    if down:
+        _add_clue_section(doc, "По вертикали ↓", down, True)
+
+    if not across and not down:
+        words = sorted(cw.words, key=lambda w: w.question.answer)
+        _add_simple_question_answer_list(doc, words)
+
+
+def _add_simple_question_answer_list(doc: Document, words: list) -> None:
+    """Добавляет простой нумерованный список вопросов и ответов."""
+    for idx, w in enumerate(words, start=1):
+        p = doc.add_paragraph()
+        p.paragraph_format.space_after = Pt(4)
+
+        run_num = p.add_run(f"{idx}. ")
+        run_num.font.bold = True
+        run_num.font.color.rgb = RGBColor(0x1a, 0x73, 0xe8)
+        run_num.font.size = Pt(11)
+
+        run_hint = p.add_run(w.question.hint)
+        run_hint.font.size = Pt(11)
+
+        run_answer = p.add_run(f" — Ответ: {w.question.answer}")
+        run_answer.font.size = Pt(11)
+        run_answer.font.bold = True
+        run_answer.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+
+        if w.question.category:
+            run_cat = p.add_run(f"  [{w.question.category}]")
+            run_cat.font.size = Pt(7)
+            run_cat.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
+
+def _add_clue_section(doc: Document, title: str, words: list, show_answers: bool) -> None:
     """Добавляет секцию вопросов."""
     h = doc.add_heading(title, level=2)
     for run in h.runs:
@@ -207,11 +274,12 @@ def _add_clue_section(doc: Document, title: str, words: list) -> None:
         run_hint = p.add_run(w.question.hint)
         run_hint.font.size = Pt(11)
 
-        # Ответ
-        run_answer = p.add_run(f" — Ответ: {w.question.answer}")
-        run_answer.font.size = Pt(11)
-        run_answer.font.bold = True
-        run_answer.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+        if show_answers:
+            # Ответ
+            run_answer = p.add_run(f" — Ответ: {w.question.answer}")
+            run_answer.font.size = Pt(11)
+            run_answer.font.bold = True
+            run_answer.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
 
         # Картинка (если есть)
         if w.question.image_path and os.path.exists(w.question.image_path):

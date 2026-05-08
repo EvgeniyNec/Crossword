@@ -82,7 +82,7 @@ def export_pdf(crossword: Crossword, filepath: str, show_answers: bool = False,
 
     _draw_crossword_page(c, crossword, show_answers, pdf_cell_size)
     c.showPage()
-    _draw_clues_page(c, crossword)
+    _draw_clues_page(c, crossword, show_answers)
     c.showPage()
 
     c.save()
@@ -431,7 +431,7 @@ def _draw_grid_page(c: canvas.Canvas, cw: Crossword, show_answers: bool,
             x_pos += 20 * mm
 
 
-def _draw_clues_page(c: canvas.Canvas, cw: Crossword) -> None:
+def _draw_clues_page(c: canvas.Canvas, cw: Crossword, show_answers: bool) -> None:
     """Рисует страницу с вопросами."""
     y = PAGE_H - MARGIN
 
@@ -446,7 +446,7 @@ def _draw_clues_page(c: canvas.Canvas, cw: Crossword) -> None:
         c.setFont(FONT_NAME, 11)
         c.setFillColor(black)
         for w in sorted(cw.words, key=lambda w: w.question.answer):
-            text = _format_question_with_answer(w)
+            text = _format_question_with_answer(w) if show_answers else w.question.hint
             lines = _draw_wrapped_text(c, f"• {text}", MARGIN, y, PAGE_W - 2 * MARGIN, 5 * mm)
             y -= (lines * 5 * mm) + 2 * mm
             if w.question.category:
@@ -480,17 +480,17 @@ def _draw_clues_page(c: canvas.Canvas, cw: Crossword) -> None:
 
     # По горизонтали
     if across:
-        y = _draw_clue_section(c, "По горизонтали →", across, y)
+        y = _draw_clue_section(c, "По горизонтали →", across, y, show_answers)
 
     y -= 5 * mm
 
     # По вертикали
     if down:
-        y = _draw_clue_section(c, "По вертикали ↓", down, y)
+        y = _draw_clue_section(c, "По вертикали ↓", down, y, show_answers)
 
 
 def _draw_clue_section(
-    c: canvas.Canvas, title: str, words: list, y: float
+    c: canvas.Canvas, title: str, words: list, y: float, show_answers: bool
 ) -> float:
     """Рисует секцию вопросов (горизонталь или вертикаль)."""
     c.setFont(FONT_NAME, 13)
@@ -513,7 +513,7 @@ def _draw_clue_section(
 
         # Подсказка
         c.setFillColor(black)
-        hint_text = _format_question_with_answer(w)
+        hint_text = _format_question_with_answer(w) if show_answers else w.question.hint
 
         # Если есть картинка — добавляем её
         if w.question.image_path and os.path.exists(w.question.image_path):
