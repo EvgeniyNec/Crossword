@@ -88,6 +88,17 @@ def export_pdf(crossword: Crossword, filepath: str, show_answers: bool = False,
     c.save()
 
 
+def export_pdf_questions_answers(crossword: Crossword, filepath: str) -> None:
+    """Экспортирует в PDF только вопросы и ответы."""
+    _register_font()
+
+    c = canvas.Canvas(filepath, pagesize=A4)
+    c.setTitle(f"{crossword.title} — вопросы и ответы")
+
+    _draw_questions_answers_page(c, crossword)
+    c.save()
+
+
 def _draw_crossword_page(c: canvas.Canvas, cw: Crossword, show_answers: bool,
                          cell_size_mm=None) -> None:
     """Рисует страницу с сеткой кроссворда."""
@@ -435,8 +446,14 @@ def _draw_clues_page(c: canvas.Canvas, cw: Crossword) -> None:
         c.setFont(FONT_NAME, 11)
         c.setFillColor(black)
         for w in sorted(cw.words, key=lambda w: w.question.answer):
-            c.drawString(MARGIN, y, f"• {w.question.answer} — {w.question.hint}")
-            y -= 6 * mm
+            text = _format_question_with_answer(w)
+            lines = _draw_wrapped_text(c, f"• {text}", MARGIN, y, PAGE_W - 2 * MARGIN, 5 * mm)
+            y -= (lines * 5 * mm) + 2 * mm
+            if w.question.category:
+                c.setFont(FONT_NAME, 7)
+                c.setFillColor(HexColor("#999999"))
+                c.drawString(MARGIN + 4 * mm, y + 1 * mm, f"[{w.question.category}]")
+                y -= 3 * mm
             if y < MARGIN + 10 * mm:
                 c.showPage()
                 y = PAGE_H - MARGIN
@@ -496,7 +513,7 @@ def _draw_clue_section(
 
         # Подсказка
         c.setFillColor(black)
-        hint_text = w.question.hint
+        hint_text = _format_question_with_answer(w)
 
         # Если есть картинка — добавляем её
         if w.question.image_path and os.path.exists(w.question.image_path):
@@ -541,6 +558,90 @@ def _draw_clue_section(
             y -= 3 * mm
 
     return y
+
+
+def _draw_questions_answers_page(c: canvas.Canvas, cw: Crossword) -> None:
+    """Рисует PDF-страницы только с вопросами и ответами."""
+    y = PAGE_H - MARGIN
+    c.setFont(FONT_NAME, 16)
+    c.setFillColor(COLOR_TITLE)
+    c.drawCentredString(PAGE_W / 2, y - 5 * mm, "Вопросы и ответы")
+    y -= 15 * mm
+
+    ptype = cw.puzzle_type
+    if ptype == "filword":
+        words = sorted(cw.words, key=lambda w: w.question.answer)
+        _draw_questions_answers_list(c, words, y)
+        return
+
+    across = sorted([w for w in cw.words if w.direction == 'across'], key=lambda w: w.number)
+    down = sorted([w for w in cw.words if w.direction == 'down'], key=lambda w: w.number)
+
+    if across:
+        y = _draw_questions_answers_section(c, "По горизонтали →", across, y)
+        y -= 5 * mm
+    if down:
+        _draw_questions_answers_section(c, "По вертикали ↓", down, y)
+
+
+def _draw_questions_answers_list(c: canvas.Canvas, words: list, y: float) -> float:
+    """Рисует простой список вопросов и ответов."""
+    max_text_width = PAGE_W - 2 * MARGIN
+    line_height = 5 * mm
+
+    for idx, w in enumerate(words, start=1):
+        if y < MARGIN + 15 * mm:
+            c.showPage()
+            y = PAGE_H - MARGIN
+
+        c.setFillColor(black)
+        text = f"{idx}. {_format_question_with_answer(w)}"
+        lines = _draw_wrapped_text(c, text, MARGIN, y, max_text_width, line_height)
+        y -= (lines * line_height) + 2 * mm
+
+        if w.question.category:
+            c.setFont(FONT_NAME, 7)
+            c.setFillColor(HexColor("#999999"))
+            c.drawString(MARGIN + 5 * mm, y + 1 * mm, f"[{w.question.category}]")
+            y -= 3 * mm
+
+    return y
+
+
+def _draw_questions_answers_section(
+    c: canvas.Canvas, title: str, words: list, y: float
+) -> float:
+    """Рисует секцию для PDF только с вопросами и ответами."""
+    c.setFont(FONT_NAME, 13)
+    c.setFillColor(COLOR_CATEGORY)
+    c.drawString(MARGIN, y, title)
+    y -= 8 * mm
+
+    max_text_width = PAGE_W - 2 * MARGIN
+    line_height = 5 * mm
+
+    for w in words:
+        if y < MARGIN + 15 * mm:
+            c.showPage()
+            y = PAGE_H - MARGIN
+
+        c.setFillColor(black)
+        text = f"{w.number}. {_format_question_with_answer(w)}"
+        lines = _draw_wrapped_text(c, text, MARGIN, y, max_text_width, line_height)
+        y -= (lines * line_height) + 2 * mm
+
+        if w.question.category:
+            c.setFont(FONT_NAME, 7)
+            c.setFillColor(HexColor("#999999"))
+            c.drawString(MARGIN + 5 * mm, y + 1 * mm, f"[{w.question.category}]")
+            y -= 3 * mm
+
+    return y
+
+
+def _format_question_with_answer(w) -> str:
+    """Формирует строку вопроса с ответом."""
+    return f"{w.question.hint} — Ответ: {w.question.answer}"
 
 
 def _draw_wrapped_text(

@@ -207,6 +207,12 @@ def _add_clue_section(doc: Document, title: str, words: list) -> None:
         run_hint = p.add_run(w.question.hint)
         run_hint.font.size = Pt(11)
 
+        # Ответ
+        run_answer = p.add_run(f" — Ответ: {w.question.answer}")
+        run_answer.font.size = Pt(11)
+        run_answer.font.bold = True
+        run_answer.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+
         # Картинка (если есть)
         if w.question.image_path and os.path.exists(w.question.image_path):
             try:
